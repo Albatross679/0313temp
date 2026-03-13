@@ -5,11 +5,17 @@
 
 ## v1 Requirements
 
+### T5-Base Fine-Tuning
+
+- [ ] **FT-01**: Fine-tune T5-base (google-t5/t5-base) on NL→SQL training data using existing Part 1 pipeline
+- [ ] **FT-02**: Evaluate T5-base fine-tuned model on dev set (Record F1, Query EM) and compare against T5-small baseline
+- [ ] **FT-03**: If T5-base outperforms T5-small, generate test SQL and records for submission
+
 ### DPO Training
 
-- [ ] **DPO-01**: Generate preference pairs by sampling multiple SQL outputs from fine-tuned T5 per query
+- [ ] **DPO-01**: Generate preference pairs by sampling multiple SQL outputs from best fine-tuned T5 per query
 - [ ] **DPO-02**: Rank preference pairs by SQL execution correctness against ground truth
-- [ ] **DPO-03**: Implement DPO training loop for T5-small (full fine-tune)
+- [ ] **DPO-03**: Implement DPO training loop for T5 (full fine-tune)
 - [ ] **DPO-04**: Implement DPO training with LoRA
 - [ ] **DPO-05**: Compare DPO with and without LoRA on dev set metrics
 - [ ] **DPO-06**: Evaluate best DPO model on dev set (Record F1, Query EM)
@@ -42,34 +48,36 @@ None -- this is a one-shot assignment submission.
 |---------|--------|
 | Retraining Part 2 (T5 from scratch) | Already has satisfactory test outputs |
 | Retraining Part 3 (LLM prompting) | Already has satisfactory test outputs |
-| New model architectures beyond DPO | Assignment scope is fixed |
 | Hyperparameter sweep for DPO | Time constraint -- run best-guess config |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DPO-01 | Phase 1 | Pending |
-| DPO-02 | Phase 1 | Pending |
-| DPO-03 | Phase 1 | Pending |
-| DPO-04 | Phase 1 | Pending |
-| DPO-05 | Phase 1 | Pending |
-| DPO-06 | Phase 1 | Pending |
-| DPO-07 | Phase 1 | Pending |
-| RPT-01 | Phase 2 | Pending |
-| RPT-02 | Phase 2 | Pending |
-| RPT-03 | Phase 2 | Pending |
-| RPT-04 | Phase 2 | Pending |
-| VIZ-01 | Phase 2 | Pending |
-| VIZ-02 | Phase 2 | Pending |
-| ANL-01 | Phase 3 | Pending |
-| ANL-02 | Phase 3 | Pending |
+| FT-01 | Phase 1 | Pending |
+| FT-02 | Phase 1 | Pending |
+| FT-03 | Phase 1 | Pending |
+| DPO-01 | Phase 2 | Pending |
+| DPO-02 | Phase 2 | Pending |
+| DPO-03 | Phase 2 | Pending |
+| DPO-04 | Phase 2 | Pending |
+| DPO-05 | Phase 2 | Pending |
+| DPO-06 | Phase 2 | Pending |
+| DPO-07 | Phase 2 | Pending |
+| RPT-01 | Phase 3 | Pending |
+| RPT-02 | Phase 3 | Pending |
+| RPT-03 | Phase 3 | Pending |
+| RPT-04 | Phase 3 | Pending |
+| VIZ-01 | Phase 3 | Pending |
+| VIZ-02 | Phase 3 | Pending |
+| ANL-01 | Phase 4 | Pending |
+| ANL-02 | Phase 4 | Pending |
 
 **Coverage:**
-- v1 requirements: 15 total
-- Mapped to phases: 15
+- v1 requirements: 18 total
+- Mapped to phases: 18
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-13*
-*Last updated: 2026-03-13 after roadmap creation*
+*Last updated: 2026-03-13 after Phase 1 insertion (T5-base fine-tuning)*

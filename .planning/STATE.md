@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** Get the assignment fully submission-ready -- complete report with real metrics, DPO-improved Part 1 model, and all required output files.
-**Current focus:** Phase 1: DPO Training
+**Current focus:** Phase 1: T5-Base Fine-Tuning
 
 ## Current Position
 
-Phase: 1 of 3 (DPO Training)
-Plan: 0 of 2 in current phase
+Phase: 1 of 4 (T5-Base Fine-Tuning)
+Plan: 0 of 1 in current phase
 Status: Ready to plan
-Last activity: 2026-03-13 -- Roadmap created
+Last activity: 2026-03-13 -- Roadmap restructured (added Phase 1, renumbered)
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -42,8 +42,14 @@ Progress: [░░░░░░░░░░] 0%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- DPO on Part 1 fine-tuned model to improve Record F1
+- Fine-tune T5-base instead of just T5-small for Part 1 (potentially stronger baseline)
+- DPO on best fine-tuned model (base or small) to further improve Record F1
 - Preference data strategy: sample multiple SQL outputs, rank by execution correctness
+- Compare DPO with and without LoRA
+
+### Roadmap Evolution
+
+- 2026-03-13: Roadmap restructured — new Phase 1 (T5-Base Fine-Tuning) added, existing phases renumbered 2/3/4
 
 ### Pending Todos
 
@@ -51,11 +57,12 @@ None yet.
 
 ### Blockers/Concerns
 
+- T5-base is ~220M params vs T5-small ~60M — may need adjusted batch size for GPU VRAM
 - DPO preference data generation strategy needs implementation details (sampling temperature, number of samples per query)
 - Timeline is tight (due ~2026-03-14/15)
 
 ## Session Continuity
 
 Last session: 2026-03-13
-Stopped at: Roadmap created, ready to plan Phase 1
+Stopped at: Roadmap restructured, ready to plan Phase 1
 Resume file: None
