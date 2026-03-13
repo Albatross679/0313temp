@@ -2,7 +2,7 @@
 
 ## Overview
 
-Four phases to get the assignment submission-ready. First, fine-tune T5-base (larger model) on NL→SQL to establish a stronger Part 1 baseline. Then run DPO training on the best fine-tuned model to further improve Record F1. Next compute all test metrics and create the ICL sensitivity plot. Finally, complete the qualitative error analysis to finish the report.
+Four phases to get the assignment submission-ready. First, fine-tune T5-base (larger model) on NL-to-SQL to establish a stronger Part 1 baseline. Then run DPO training on the best fine-tuned model to further improve Record F1. Next compute all test metrics and create the ICL sensitivity plot. Finally, complete the qualitative error analysis to finish the report.
 
 ## Phases
 
@@ -12,7 +12,7 @@ Four phases to get the assignment submission-ready. First, fine-tune T5-base (la
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: T5-Base Fine-Tuning** - Fine-tune T5-base on NL→SQL to establish stronger Part 1 baseline
+- [ ] **Phase 1: T5-Base Fine-Tuning** - Fine-tune T5-base on NL-to-SQL to establish stronger Part 1 baseline
 - [ ] **Phase 2: DPO Training** - Train DPO on best fine-tuned T5 to improve Record F1, finalize test outputs
 - [ ] **Phase 3: Metrics and Visualization** - Compute all test set metrics and create ICL sensitivity plot for report
 - [ ] **Phase 4: Error Analysis** - Complete qualitative error analysis table in report
@@ -24,7 +24,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Depends on**: Nothing (first phase)
 **Requirements**: FT-01, FT-02, FT-03
 **Success Criteria** (what must be TRUE):
-  1. T5-base model is fine-tuned on NL→SQL training data using existing Part 1 pipeline
+  1. T5-base model is fine-tuned on NL-to-SQL training data using existing Part 1 pipeline
   2. Dev set Record F1 and Query EM are computed and compared against T5-small baseline
   3. If T5-base outperforms T5-small, test SQL and records are generated; best model selected for DPO phase
 **Plans:** 1 plan
@@ -41,11 +41,11 @@ Plans:
   2. DPO training completes for both full fine-tune and LoRA variants with dev set evaluation logged
   3. Best DPO variant is identified by comparing dev Record F1 against baseline fine-tune
   4. If DPO improves dev F1, test SQL (`results/t5_ft_test.sql`) and records (`records/t5_ft_test.pkl`) are regenerated from the DPO model; otherwise baseline outputs are retained
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 02-01: Generate preference data and implement DPO training
-- [ ] 02-02: Evaluate DPO variants and finalize Part 1 outputs
+- [ ] 02-01-PLAN.md — Fix DPO bugs, add LoRA config, generate preference data, run both DPO variants
+- [ ] 02-02-PLAN.md — Compare DPO variants against baseline, finalize test outputs for submission
 
 ### Phase 3: Metrics and Visualization
 **Goal**: All test set metrics are computed and the ICL sensitivity plot is created, with both inserted into the report
