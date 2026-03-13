@@ -55,11 +55,11 @@ Plans:
   1. Test set Query EM and Record F1 are computed for all three parts (Part 1, Part 2, Part 3)
   2. All `XX.XX` placeholder values in the report LaTeX tables are replaced with actual scores
   3. ICL sensitivity plot showing Record F1 vs k=0,1,3 exists as a figure in `media/` and is included in the report
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
-- [ ] 03-01: Compute test metrics for all parts and fill report tables
-- [ ] 03-02: Create ICL sensitivity plot and insert into report
+- [ ] 03-01-PLAN.md — Fill dev metrics in report tables, restructure LLM table with actual experiments, get test scores from Gradescope
+- [ ] 03-02-PLAN.md — Create ICL sensitivity plot and insert into report
 
 ### Phase 4: Error Analysis
 **Goal**: The report contains a complete qualitative error analysis with concrete examples and error pattern statistics
