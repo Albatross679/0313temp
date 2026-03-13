@@ -1,0 +1,942 @@
+"""Part 2 training: train loop, eval, test inference for T5 from scratch."""
+
+import argparse
+import gc
+import os
+import shutil
+import signal
+import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+
+from part2.data import PAD_IDX, _TOKENIZER, load_t5_data
+from part2.model import (
+    initialize_model,
+    load_model_from_checkpoint,
+    load_training_state,
+    save_model,
+    save_training_state,
+)
+from part2.model_flightdb import FlightSQLVocab, T5ForFlightSQL
+from src.wandb_utils import (
+    end_run,
+    log_epoch_metrics,
+    log_extra_params,
+    log_model_artifact,
+    setup_run,
+)
+from src.utils.system_metrics import collect_hardware_info, collect_system_metrics
+from t5_utils import initialize_optimizer_and_scheduler
+from utils import compute_metrics, save_queries_and_records, set_random_seeds
+
+# ── Graceful stop ──────────────────────────────────────────────────────────
+
+_stop_requested = False
+
+
+def _sigterm_handler(signum, frame):
+    global _stop_requested
+    _stop_requested = True
+    print("\nSIGTERM received. Will stop after current epoch...")
+
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+
+
+def _check_stop():
+    """Check for STOP file or SIGTERM signal."""
+    if _stop_requested:
+        return True
+    if Path("STOP").exists():
+        Path("STOP").unlink(missing_ok=True)
+        return True
+    return False
+
+
+def _make_criterion(cfg):
+    """Build loss function, with optional label smoothing."""
+    ls = getattr(cfg, 'label_smoothing', 0.0)
+    if cfg.loss_fn == "cross_entropy":
+        return nn.CrossEntropyLoss(label_smoothing=ls)
+    raise ValueError(f"Unknown loss_fn: {cfg.loss_fn}")
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────
+
+def _forward_and_loss(model, encoder_input, encoder_mask, decoder_input,
+                      decoder_targets, criterion):
+    """Compute loss, dispatching to restricted vocab when applicable."""
+    if isinstance(model, T5ForFlightSQL):
+        logits = model.restricted_forward(encoder_input, encoder_mask, decoder_input)
+        remapped = model.remap_targets(decoder_targets)
+        non_pad = decoder_targets != PAD_IDX
+        loss = criterion(logits[non_pad], remapped[non_pad])
+    else:
+        logits = model(
+            input_ids=encoder_input,
+            attention_mask=encoder_mask,
+            decoder_input_ids=decoder_input,
+        )["logits"]
+        non_pad = decoder_targets != PAD_IDX
+        loss = criterion(logits[non_pad], decoder_targets[non_pad])
+    return loss, non_pad
+
+
+# ── Shared generation helper ────────────────────────────────────────────
+
+def _generate_predictions(model, loader, max_new_tokens, num_beams, device,
+                          repetition_penalty=1.0, no_repeat_ngram_size=0,
+                          early_stopping=True):
+    """Run model.generate on every batch; return list of decoded strings."""
+    all_preds = []
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        num_beams=num_beams,
+        early_stopping=early_stopping if num_beams > 1 else False,
+        decoder_start_token_id=32099,  # <extra_id_0>, matches training BOS
+    )
+    if repetition_penalty != 1.0:
+        gen_kwargs["repetition_penalty"] = repetition_penalty
+    if no_repeat_ngram_size > 0:
+        gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
+    # Constrained decoding for restricted vocab models
+    if isinstance(model, T5ForFlightSQL):
+        gen_kwargs["prefix_allowed_tokens_fn"] = model.vocab.get_prefix_allowed_tokens_fn()
+        gen_model = model.model
+    else:
+        gen_model = model
+    with torch.inference_mode():
+        for batch in tqdm(loader):
+            encoder_input = batch[0].to(device)
+            encoder_mask = batch[1].to(device)
+            outputs = gen_model.generate(
+                input_ids=encoder_input,
+                attention_mask=encoder_mask,
+                **gen_kwargs,
+            )
+            preds = _TOKENIZER.batch_decode(outputs, skip_special_tokens=True)
+            all_preds.extend(preds)
+    return all_preds
+
+
+# ── Training ────────────────────────────────────────────────────────────────
+
+def _collect_async_sql(pending, cfg, ckpt_dir, model, best_val, best_metrics,
+                       epochs_since_improvement, optimizer):
+    """Collect results from a background SQL future; log, checkpoint, early-stop.
+
+    Returns (best_val, best_metrics, epochs_since_improvement, should_stop).
+    """
+    future, p_epoch, p_tr_loss, p_dev_loss, p_avg_grad_norm, p_lr, \
+        p_train_epoch_seconds, p_train_tokens, p_epoch_gpu_end, p_epoch_start, train_start = pending
+
+    record_f1, record_em, sql_em, error_rate = future.result()
+    epoch_time = time.time() - p_epoch_start
+    wall_clock = time.time() - train_start
+
+    print(f"Epoch {p_epoch}: F1 = {record_f1:.4f}, "
+          f"EM = {record_em:.4f}, SQL_EM = {sql_em:.4f}, err = {error_rate*100:.1f}%")
+
+    log_epoch_metrics({
+        "epoch": p_epoch,
+        "train_loss": p_tr_loss,
+        "dev_loss": p_dev_loss,
+        "record_f1": record_f1,
+        "record_em": record_em,
+        "sql_em": sql_em,
+        "error_rate": error_rate,
+        "gradient_norm": p_avg_grad_norm,
+        "lr": p_lr,
+    }, step=p_epoch)
+
+    log_epoch_metrics({
+        "timing/epoch_seconds": epoch_time,
+        "timing/wall_clock_seconds": wall_clock,
+        "timing/train_epoch_seconds": p_train_epoch_seconds,
+        "timing/train_tokens_per_sec": p_train_tokens / p_train_epoch_seconds if p_train_epoch_seconds > 0 else 0,
+    }, step=p_epoch)
+
+    tol = getattr(cfg, 'patience_tolerance', 0.0)
+    improved = (record_f1 > best_val + tol) if cfg.checkpointing.mode == "max" else (record_f1 < best_val - tol)
+    log_epoch_metrics({
+        "tracking/best_record_f1": record_f1 if improved else best_val,
+        "tracking/epochs_since_improvement": 0 if improved else epochs_since_improvement + 1,
+    }, step=p_epoch)
+
+    if improved:
+        best_val = record_f1
+        best_metrics = {
+            "record_f1": record_f1, "record_em": record_em,
+            "sql_em": sql_em, "error_rate": error_rate,
+        }
+        epochs_since_improvement = 0
+        if cfg.checkpointing.enabled and cfg.checkpointing.save_best:
+            save_model(ckpt_dir, model, best=True,
+                       best_filename=cfg.checkpointing.best_filename,
+                       last_filename=cfg.checkpointing.last_filename)
+    else:
+        epochs_since_improvement += 1
+
+    should_stop = (cfg.patience_epochs > 0 and epochs_since_improvement >= cfg.patience_epochs)
+    if should_stop:
+        print(f"Early stopping at epoch {p_epoch} (patience={cfg.patience_epochs})")
+
+    return best_val, best_metrics, epochs_since_improvement, should_stop
+
+
+def train(cfg, model, train_loader, dev_loader, optimizer, scheduler, run_dir,
+          start_epoch=0, best_val=None, epochs_since_improvement=0):
+    if best_val is None:
+        best_val = -1 if cfg.checkpointing.mode == "max" else float("inf")
+    best_metrics = {}
+    ckpt_dir = str(run_dir / "checkpoints")
+    train_start = time.time()
+    epoch_times = []
+    device = cfg.device
+
+    gt_sql_path = "data/dev.sql"
+    gt_record_path = "records/ground_truth_dev.pkl"
+
+    global_step = start_epoch * len(train_loader)
+    _interrupted = False
+    _pred_cache = {}
+    _sql_pool = ThreadPoolExecutor(max_workers=1)
+    _pending_list = []  # background SQL futures + metadata
+    try:
+      for epoch in range(start_epoch, cfg.num_epochs):
+        # Graceful stop: STOP file or SIGTERM
+        if _check_stop():
+            print(f"Stop requested before epoch {epoch}. Draining async work...")
+            for p in _pending_list:
+                best_val, best_metrics, epochs_since_improvement, _ = _collect_async_sql(
+                    p, cfg, ckpt_dir, model, best_val, best_metrics,
+                    epochs_since_improvement, optimizer,
+                )
+            _pending_list.clear()
+            break
+
+        # Non-blocking: collect any completed background SQL results
+        _should_stop = False
+        while _pending_list and _pending_list[0][0].done():
+            p = _pending_list.pop(0)
+            best_val, best_metrics, epochs_since_improvement, _should_stop = _collect_async_sql(
+                p, cfg, ckpt_dir, model, best_val, best_metrics,
+                epochs_since_improvement, optimizer,
+            )
+            if _should_stop:
+                break
+        if _should_stop:
+            break
+
+        epoch_start = time.time()
+        train_t0 = time.time()
+        tr_loss, avg_grad_norm, train_tokens, global_step = train_epoch(
+            cfg, model, train_loader, optimizer, scheduler, device, global_step
+        )
+        train_epoch_seconds = time.time() - train_t0
+
+        # ── Evaluate every N epochs (and always on the last epoch) ──
+        is_last_epoch = (epoch == cfg.num_epochs - 1)
+        should_eval = is_last_epoch or ((epoch + 1) % cfg.eval_every_n_epochs == 0)
+
+        if should_eval:
+            dev_loss, all_preds = eval_epoch_gpu(cfg, model, dev_loader, device, is_final=is_last_epoch)
+            epoch_gpu_end = time.time()
+
+            # Epoch-specific paths to avoid file conflicts during overlap
+            model_sql_path = str(run_dir / f"dev_pred_e{epoch}.sql")
+            model_record_path = str(run_dir / f"dev_pred_e{epoch}.pkl")
+
+            if is_last_epoch:
+                # Drain all pending SQL before final sync eval
+                for p in _pending_list:
+                    best_val, best_metrics, epochs_since_improvement, _ = _collect_async_sql(
+                        p, cfg, ckpt_dir, model, best_val, best_metrics,
+                        epochs_since_improvement, optimizer,
+                    )
+                _pending_list.clear()
+                # Last epoch: run SQL synchronously (no next epoch to overlap with)
+                record_f1, record_em, sql_em, error_rate = eval_epoch_sql(
+                    all_preds, cfg, gt_sql_path, model_sql_path,
+                    gt_record_path, model_record_path, _pred_cache,
+                )
+                epoch_time = time.time() - epoch_start
+                epoch_times.append(epoch_time)
+                wall_clock = time.time() - train_start
+
+                print(f"Epoch {epoch}: train loss = {tr_loss:.4f}, dev loss = {dev_loss:.4f}")
+                print(f"Epoch {epoch}: F1 = {record_f1:.4f}, "
+                      f"EM = {record_em:.4f}, SQL_EM = {sql_em:.4f}, err = {error_rate*100:.1f}%")
+
+                log_epoch_metrics({
+                    "epoch": epoch, "train_loss": tr_loss, "dev_loss": dev_loss,
+                    "record_f1": record_f1, "record_em": record_em,
+                    "sql_em": sql_em, "error_rate": error_rate,
+                    "gradient_norm": avg_grad_norm,
+                    "lr": optimizer.param_groups[0]["lr"],
+                }, step=epoch)
+                log_epoch_metrics({
+                    "timing/epoch_seconds": epoch_time,
+                    "timing/wall_clock_seconds": wall_clock,
+                    "timing/train_epoch_seconds": train_epoch_seconds,
+                    "timing/train_tokens_per_sec": train_tokens / train_epoch_seconds if train_epoch_seconds > 0 else 0,
+                }, step=epoch)
+
+                tol = getattr(cfg, 'patience_tolerance', 0.0)
+                improved = (record_f1 > best_val + tol) if cfg.checkpointing.mode == "max" else (record_f1 < best_val - tol)
+                log_epoch_metrics({
+                    "tracking/best_record_f1": record_f1 if improved else best_val,
+                    "tracking/epochs_since_improvement": 0 if improved else epochs_since_improvement + 1,
+                }, step=epoch)
+                if improved:
+                    best_val = record_f1
+                    best_metrics = {"record_f1": record_f1, "record_em": record_em,
+                                    "sql_em": sql_em, "error_rate": error_rate}
+                    epochs_since_improvement = 0
+                    if cfg.checkpointing.enabled and cfg.checkpointing.save_best:
+                        save_model(ckpt_dir, model, best=True,
+                                   best_filename=cfg.checkpointing.best_filename,
+                                   last_filename=cfg.checkpointing.last_filename)
+                else:
+                    epochs_since_improvement += 1
+
+                if cfg.log_system_metrics:
+                    system = collect_system_metrics(device)
+                    log_epoch_metrics({f"system/{k}": v for k, v in system.items()}, step=epoch)
+            else:
+                # Not last epoch: launch SQL in background, overlap with next train
+                print(f"Epoch {epoch}: train loss = {tr_loss:.4f}, SQL metrics pending (async)...")
+                future = _sql_pool.submit(
+                    eval_epoch_sql, all_preds, cfg, gt_sql_path, model_sql_path,
+                    gt_record_path, model_record_path, _pred_cache,
+                )
+                _pending_list.append((future, epoch, tr_loss, dev_loss, avg_grad_norm,
+                            optimizer.param_groups[0]["lr"],
+                            train_epoch_seconds, train_tokens, epoch_gpu_end,
+                            epoch_start, train_start))
+                epoch_times.append(time.time() - epoch_start)
+
+                if cfg.log_system_metrics:
+                    system = collect_system_metrics(device)
+                    log_epoch_metrics({f"system/{k}": v for k, v in system.items()}, step=epoch)
+        else:
+            epoch_time = time.time() - epoch_start
+            epoch_times.append(epoch_time)
+            wall_clock = time.time() - train_start
+
+            print(f"Epoch {epoch}: train loss = {tr_loss:.4f}")
+            print(f"Epoch {epoch}: eval skipped (every {cfg.eval_every_n_epochs} epochs)")
+
+            log_epoch_metrics({
+                "epoch": epoch, "train_loss": tr_loss,
+                "gradient_norm": avg_grad_norm,
+                "lr": optimizer.param_groups[0]["lr"],
+            }, step=epoch)
+            log_epoch_metrics({
+                "timing/epoch_seconds": epoch_time,
+                "timing/wall_clock_seconds": wall_clock,
+                "timing/train_epoch_seconds": train_epoch_seconds,
+                "timing/train_tokens_per_sec": train_tokens / train_epoch_seconds if train_epoch_seconds > 0 else 0,
+            }, step=epoch)
+            if cfg.log_system_metrics:
+                system = collect_system_metrics(device)
+                log_epoch_metrics({f"system/{k}": v for k, v in system.items()}, step=epoch)
+
+        if cfg.checkpointing.enabled and cfg.checkpointing.save_every_n > 0 and (epoch + 1) % cfg.checkpointing.save_every_n == 0:
+            save_model(ckpt_dir, model, best=False,
+                       last_filename=f"model_epoch_{epoch}.pt")
+
+        if cfg.checkpointing.save_training_state:
+            save_training_state(ckpt_dir, model, optimizer, scheduler,
+                                epoch + 1, best_val, epochs_since_improvement,
+                                )
+
+        wall_clock = time.time() - train_start
+        if cfg.max_wall_clock_hours and wall_clock >= cfg.max_wall_clock_hours * 3600:
+            # Drain all pending SQL before stopping
+            for p in _pending_list:
+                best_val, best_metrics, epochs_since_improvement, _ = _collect_async_sql(
+                    p, cfg, ckpt_dir, model, best_val, best_metrics,
+                    epochs_since_improvement, optimizer,
+                )
+            _pending_list.clear()
+            print(f"Time budget reached ({wall_clock/3600:.2f}h / {cfg.max_wall_clock_hours:.2f}h). Stopping after epoch {epoch}.")
+            break
+
+    except KeyboardInterrupt:
+        _interrupted = True
+        # Drain pending SQL if possible
+        for p in _pending_list:
+            try:
+                best_val, best_metrics, epochs_since_improvement, _ = _collect_async_sql(
+                    p, cfg, ckpt_dir, model, best_val, best_metrics,
+                    epochs_since_improvement, optimizer,
+                )
+            except Exception:
+                pass
+        _pending_list.clear()
+        print(f"\nInterrupted at epoch {epoch}. Saving training state...")
+        if cfg.checkpointing.save_training_state:
+            save_training_state(ckpt_dir, model, optimizer, scheduler,
+                                epoch, best_val, epochs_since_improvement,
+                                )
+            print(f"State saved to {ckpt_dir}. Resume with --resume {run_dir}")
+        else:
+            print("Training state saving disabled (checkpointing.save_training_state=False). Resume not available.")
+    finally:
+        _sql_pool.shutdown(wait=False)
+
+    if epoch_times:
+        log_extra_params({"avg_epoch_seconds": round(sum(epoch_times) / len(epoch_times), 2)})
+
+    return best_val, _interrupted
+
+
+def train_epoch(cfg, model, train_loader, optimizer, scheduler, device, global_step=0):
+    model.train()
+    total_loss = 0
+    total_tokens = 0
+    total_grad_norm = 0.0
+    num_batches = 0
+    criterion = _make_criterion(cfg)
+
+    for encoder_input, encoder_mask, decoder_input, decoder_targets, _ in tqdm(train_loader):
+        optimizer.zero_grad()
+        encoder_input = encoder_input.to(device)
+        encoder_mask = encoder_mask.to(device)
+        decoder_input = decoder_input.to(device)
+        decoder_targets = decoder_targets.to(device)
+
+        loss, non_pad = _forward_and_loss(
+            model, encoder_input, encoder_mask, decoder_input, decoder_targets, criterion,
+        )
+        loss.backward()
+
+        # clip_grad_norm_ returns the total (unclipped) gradient norm
+        clip_val = cfg.grad_clip_norm if cfg.grad_clip_norm is not None else float("inf")
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), clip_val).item()
+        total_grad_norm += grad_norm
+        num_batches += 1
+
+        optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
+
+        num_tokens = torch.sum(non_pad).item()
+        total_loss += loss.item() * num_tokens
+        total_tokens += num_tokens
+
+        log_epoch_metrics({
+            "batch/loss": loss.item(),
+            "batch/gradient_norm": grad_norm,
+            "batch/lr": optimizer.param_groups[0]["lr"],
+        }, step=global_step)
+        global_step += 1
+
+    avg_loss = total_loss / total_tokens
+    avg_grad_norm = total_grad_norm / num_batches
+    return avg_loss, avg_grad_norm, total_tokens, global_step
+
+
+# ── Evaluation ──────────────────────────────────────────────────────────
+
+def _maybe_subset_loader(dev_loader, subset_size):
+    """Wrap dev_loader to yield only the first `subset_size` examples."""
+    if subset_size is None or subset_size <= 0:
+        return dev_loader
+    from torch.utils.data import DataLoader, Subset
+    ds = dev_loader.dataset
+    n = min(subset_size, len(ds))
+    if n == len(ds):
+        return dev_loader
+    subset = Subset(ds, list(range(n)))
+    return DataLoader(subset, batch_size=dev_loader.batch_size,
+                      shuffle=False, collate_fn=dev_loader.collate_fn,
+                      num_workers=dev_loader.num_workers)
+
+
+def _compute_dev_loss(model, loader, criterion, device):
+    """Cheap teacher-forced loss on the (possibly subsetted) dev loader."""
+    total_loss = 0.0
+    total_tokens = 0
+    with torch.inference_mode():
+        for batch in loader:
+            enc_in = batch[0].to(device)
+            enc_mask = batch[1].to(device)
+            dec_in = batch[2].to(device)
+            dec_tgt = batch[3].to(device)
+            loss, non_pad = _forward_and_loss(model, enc_in, enc_mask, dec_in, dec_tgt, criterion)
+            n = non_pad.sum().item()
+            total_loss += loss.item() * n
+            total_tokens += n
+    return total_loss / total_tokens if total_tokens > 0 else 0.0
+
+
+def eval_epoch_gpu(cfg, model, dev_loader, device, *, is_final=False):
+    """Phase A (GPU): compute dev loss + generate predictions.
+
+    During training eval: uses eval_num_beams (greedy) and eval_subset_size.
+    During final eval (is_final=True): uses full num_beams on all examples.
+    Returns (dev_loss, all_preds).
+    """
+    model.eval()
+    if is_final:
+        num_beams = cfg.num_beams
+        loader = dev_loader
+    else:
+        num_beams = cfg.eval_num_beams if cfg.eval_num_beams is not None else cfg.num_beams
+        loader = _maybe_subset_loader(dev_loader, getattr(cfg, 'eval_subset_size', None))
+
+    # Teacher-forced dev loss (cheap: single parallel forward pass)
+    ls = getattr(cfg, "label_smoothing", 0.0)
+    criterion = nn.CrossEntropyLoss(label_smoothing=ls)
+    dev_loss = _compute_dev_loss(model, loader, criterion, device)
+
+    all_preds = _generate_predictions(model, loader, cfg.max_new_tokens, num_beams, device,
+                                      repetition_penalty=getattr(cfg, 'repetition_penalty', 1.0),
+                                      no_repeat_ngram_size=getattr(cfg, 'no_repeat_ngram_size', 0),
+                                      early_stopping=getattr(cfg, 'beam_early_stopping', True))
+    return dev_loss, all_preds
+
+
+def eval_epoch_sql(all_preds, cfg, gt_sql_path, model_sql_path,
+                   gt_record_path, model_record_path, pred_cache=None):
+    """Phase B (CPU): run SQL queries and compute metrics."""
+    preds_key = hash(tuple(all_preds))
+    if pred_cache is not None and pred_cache.get("key") == preds_key:
+        print("Predictions unchanged — reusing cached SQL metrics")
+        sql_em, record_em, record_f1, error_msgs = pred_cache["metrics"]
+    else:
+        save_queries_and_records(all_preds, model_sql_path, model_record_path,
+                                 num_threads=cfg.sql_num_threads)
+        sql_em, record_em, record_f1, error_msgs = compute_metrics(
+            gt_sql_path, model_sql_path, gt_record_path, model_record_path
+        )
+        if pred_cache is not None:
+            pred_cache["key"] = preds_key
+            pred_cache["metrics"] = (sql_em, record_em, record_f1, error_msgs)
+
+    error_rate = sum(1 for m in error_msgs if m) / len(error_msgs) if error_msgs else 0
+    return record_f1, record_em, sql_em, error_rate
+
+
+def eval_epoch(cfg, model, dev_loader, gt_sql_path, model_sql_path, gt_record_path, model_record_path, device, pred_cache=None):
+    """Full eval (synchronous). Used for final eval and backward compat."""
+    _dev_loss, all_preds = eval_epoch_gpu(cfg, model, dev_loader, device, is_final=True)
+    record_f1, record_em, sql_em, error_rate = eval_epoch_sql(
+        all_preds, cfg, gt_sql_path, model_sql_path, gt_record_path, model_record_path, pred_cache,
+    )
+    return record_f1, record_em, sql_em, error_rate
+
+
+# ── Test inference ──────────────────────────────────────────────────────
+
+def test_inference(cfg, model, test_loader, model_sql_path, model_record_path, device):
+    model.eval()
+    all_preds = _generate_predictions(model, test_loader, cfg.max_new_tokens, cfg.num_beams, device,
+                                      repetition_penalty=getattr(cfg, 'repetition_penalty', 1.0),
+                                      no_repeat_ngram_size=getattr(cfg, 'no_repeat_ngram_size', 0),
+                                      early_stopping=getattr(cfg, 'beam_early_stopping', True))
+    save_queries_and_records(all_preds, model_sql_path, model_record_path,
+                             num_threads=cfg.sql_num_threads)
+    print(f"Test predictions saved to {model_sql_path}")
+
+
+# ── Pre-flight & auto batch size ───────────────────────────────────────
+
+
+def _preflight_check():
+    """Verify no other training processes are using the GPU."""
+    result = subprocess.run(
+        ["bash", "-c",
+         f"ps aux | grep -E 'python.*train' | grep -v grep | grep -v ' {os.getpid()} '"],
+        capture_output=True, text=True,
+    )
+    procs = result.stdout.strip()
+    if procs:
+        print(f"WARNING: Other training processes detected:\n{procs}")
+        print("Proceeding, but OOM risk is higher.\n")
+    else:
+        print("Pre-flight check passed: no competing training processes.\n")
+
+
+def _find_max_batch_size(model, train_loader, cfg, device):
+    """Find the largest power-of-2 batch size that fits VRAM.
+
+    Starts from the configured batch_size and tries doubling until OOM.
+    Returns the largest working size.
+    """
+    from torch.utils.data import DataLoader
+
+    dataset = train_loader.dataset
+    collate = train_loader.collate_fn
+    criterion = _make_criterion(cfg)
+
+    sizes = [2**i for i in range(2, 10)]  # 4 .. 512
+    best = cfg.batch_size  # fallback
+
+    for size in sizes:
+        if size < cfg.batch_size:
+            continue
+        try:
+            loader = DataLoader(dataset, batch_size=size, shuffle=False,
+                                collate_fn=collate, num_workers=0)
+            batch = next(iter(loader))
+
+            model.train()
+            enc = batch[0].to(device)
+            mask = batch[1].to(device)
+            dec_in = batch[2].to(device)
+            dec_tgt = batch[3].to(device)
+
+            loss, _ = _forward_and_loss(model, enc, mask, dec_in, dec_tgt, criterion)
+            loss.backward()
+            model.zero_grad(set_to_none=True)
+
+            del loss, enc, mask, dec_in, dec_tgt, batch, loader
+            torch.cuda.empty_cache()
+
+            best = size
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                model.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                break
+            raise
+
+    print(f"Auto batch size: {best} (configured: {cfg.batch_size})")
+    return best
+
+
+def _cleanup_vram(*objects):
+    """Delete objects, clear CUDA cache, run GC."""
+    for obj in objects:
+        del obj
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+# ── Entry point ─────────────────────────────────────────────────────────
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Part 2: T5 from-scratch training")
+
+    # ── Config variant (class name in part2.config) ──
+    parser.add_argument("--config", type=str, default="T5ScratchConfig",
+                        help="Config class name in part2.config (e.g. 'T5ScratchConfig')")
+
+    # ── Training hyperparameters ──
+    parser.add_argument("--num_epochs", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--test_batch_size", type=int, default=None)
+    parser.add_argument("--learning_rate", type=float, default=None)
+    parser.add_argument("--weight_decay", type=float, default=None)
+    parser.add_argument("--scheduler", type=str, default=None, choices=["cosine", "linear", "none"])
+    parser.add_argument("--patience_epochs", type=int, default=None)
+    parser.add_argument("--optimizer", type=str, default=None, choices=["AdamW"])
+    parser.add_argument("--num_warmup_epochs", type=int, default=None)
+    parser.add_argument("--grad_clip_norm", type=float, default=None)
+    parser.add_argument("--dropout", type=float, default=None)
+
+    # ── Input formatting ──
+    parser.add_argument("--input_prefix", type=str, default=None)
+    parser.add_argument("--include_schema", action="store_true", default=None)
+
+    # ── Resume / time budget ──
+    parser.add_argument("--resume", type=str, default=None, help="Run dir to resume from")
+    parser.add_argument("--max_time", type=float, default=None, help="Max wall clock hours")
+
+    # ── Decoding ──
+    parser.add_argument("--max_new_tokens", type=int, default=None)
+    parser.add_argument("--num_beams", type=int, default=None)
+
+    # ── Misc ──
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--name", type=str, default=None)
+
+    # ── Multi-config sequential auto-batch ──
+    parser.add_argument("--configs", type=str, default=None,
+                        help="Comma-separated config class names to run sequentially (auto-batch mode)")
+
+    return parser.parse_args()
+
+
+_CLI_TO_CFG = {
+    "num_epochs": "num_epochs",
+    "batch_size": "batch_size",
+    "test_batch_size": "test_batch_size",
+    "learning_rate": "learning_rate",
+    "weight_decay": "weight_decay",
+    "scheduler": "scheduler",
+    "patience_epochs": "patience_epochs",
+    "optimizer": "optimizer",
+    "num_warmup_epochs": "num_warmup_epochs",
+    "grad_clip_norm": "grad_clip_norm",
+    "dropout": "dropout",
+    "input_prefix": "input_prefix",
+    "include_schema": "include_schema",
+    "resume": "resume_run_dir",
+    "max_time": "max_wall_clock_hours",
+    "max_new_tokens": "max_new_tokens",
+    "num_beams": "num_beams",
+    "seed": "seed",
+    "name": "name",
+}
+
+
+def apply_cli_overrides(cfg, cli):
+    """Apply non-None CLI arguments to the config object."""
+    for cli_name, cfg_name in _CLI_TO_CFG.items():
+        val = getattr(cli, cli_name)
+        if val is not None:
+            setattr(cfg, cfg_name, val)
+
+
+def load_config(class_name):
+    """Look up a config class by name in part2.config and return an instance."""
+    import part2.config as cfg_mod
+    cls = getattr(cfg_mod, class_name, None)
+    if cls is None:
+        available = [n for n in dir(cfg_mod) if not n.startswith("_") and isinstance(getattr(cfg_mod, n), type)]
+        raise ValueError(f"Unknown config class '{class_name}'. Available: {available}")
+    return cls()
+
+
+# Default config sequence for sequential auto-batch
+DEFAULT_CONFIGS = ["T5ScratchConfig_v2", "T5ScratchConfig_restricted"]
+
+
+def _run_single_config(cfg, cli):
+    """Train a single config variant. Returns (record_f1, run_dir, metrics_dict) or (None, None, None) on interrupt."""
+    set_random_seeds(cfg.seed)
+    device = cfg.device
+
+    # Data
+    train_loader, dev_loader, test_loader = load_t5_data(
+        cfg.batch_size, cfg.test_batch_size,
+        input_prefix=cfg.input_prefix, include_schema=cfg.include_schema,
+    )
+
+    # Model (from scratch — finetune=False)
+    model = initialize_model(
+        finetune=cfg.finetune,
+        model_checkpoint=cfg.model_checkpoint,
+        dropout=cfg.dropout,
+        device=device,
+    )
+
+    # Wrap with restricted SQL vocabulary if configured
+    sql_vocab = None
+    if getattr(cfg, "use_restricted_vocab", False):
+        sql_vocab = FlightSQLVocab()
+        sql_vocab.to(device)
+        model = T5ForFlightSQL(model, sql_vocab)
+        print(f"Restricted SQL vocab: {sql_vocab.vocab_size} tokens "
+              f"(vs {sql_vocab.full_vocab_size} full)")
+
+    # Auto batch size tuning
+    if getattr(cfg, "auto_batch_size", False) and device != "cpu":
+        tuned_size = _find_max_batch_size(model, train_loader, cfg, device)
+        if tuned_size != cfg.batch_size:
+            cfg.batch_size = tuned_size
+            from torch.utils.data import DataLoader
+            train_loader = DataLoader(
+                train_loader.dataset, batch_size=tuned_size, shuffle=True,
+                collate_fn=train_loader.collate_fn,
+                num_workers=train_loader.num_workers,
+            )
+
+    # Optimizer & scheduler
+    args = argparse.Namespace(
+        optimizer_type=cfg.optimizer,
+        learning_rate=cfg.learning_rate,
+        weight_decay=cfg.weight_decay,
+        scheduler_type=cfg.scheduler or "none",
+        num_warmup_epochs=cfg.num_warmup_epochs,
+        max_n_epochs=cfg.num_epochs,
+    )
+    optimizer, scheduler = initialize_optimizer_and_scheduler(args, model, len(train_loader))
+
+    # Resume: load training state
+    start_epoch, best_val, epochs_since_imp = 0, None, 0
+    if cfg.resume_run_dir:
+        resume_ckpt = str(Path(cfg.resume_run_dir) / "checkpoints")
+        start_epoch, best_val, epochs_since_imp = load_training_state(
+            resume_ckpt, model, optimizer, scheduler, device
+        )
+        print(f"Resumed from epoch {start_epoch}, best_val={best_val:.4f}")
+
+    # Single setup: creates run directory + starts W&B run
+    run_dir, _ = setup_run(cfg, experiment_name="part2_t5_scratch")
+    print(f"Run directory: {run_dir}")
+    print(f"Device: {device}")
+    print(f"Batch size: {cfg.batch_size}")
+
+    # Log one-time model & data params (skip on resume — already logged)
+    if not cfg.resume_run_dir:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        extra_params = {
+            "total_params": total_params,
+            "trainable_params": trainable_params,
+            "num_train_samples": len(train_loader.dataset),
+            "num_dev_samples": len(dev_loader.dataset),
+            **collect_hardware_info(),
+        }
+        log_extra_params(extra_params)
+
+    # Train
+    _, interrupted = train(cfg, model, train_loader, dev_loader, optimizer, scheduler, run_dir,
+                           start_epoch=start_epoch, best_val=best_val, epochs_since_improvement=epochs_since_imp)
+
+    if interrupted:
+        end_run()
+        print("Training was interrupted. Skipping final eval and test inference.")
+        del model, optimizer, scheduler
+        gc.collect()
+        torch.cuda.empty_cache()
+        return None, None, None
+
+    # Free training-only objects to reclaim VRAM before loading checkpoint
+    del model, optimizer, scheduler
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    # Load best and run final eval + test
+    ckpt_dir = str(run_dir / "checkpoints")
+    model = load_model_from_checkpoint(
+        ckpt_dir, finetune=cfg.finetune, model_checkpoint=cfg.model_checkpoint,
+        dropout=cfg.dropout, best=True, device=device,
+        best_filename=cfg.checkpointing.best_filename,
+        last_filename=cfg.checkpointing.last_filename,
+    )
+    if sql_vocab is not None:
+        model = T5ForFlightSQL(model, sql_vocab)
+    model.eval()
+
+    # Final dev eval — write to per-run paths
+    dev_sql = str(run_dir / "final_dev.sql")
+    dev_pkl = str(run_dir / "final_dev.pkl")
+    f1, em, sql_em, err = eval_epoch(
+        cfg, model, dev_loader, "data/dev.sql", dev_sql,
+        "records/ground_truth_dev.pkl", dev_pkl, device,
+    )
+    print(f"Final dev: F1={f1:.4f}, EM={em:.4f}, SQL_EM={sql_em:.4f}, err={err*100:.1f}%")
+
+    # Test — write to per-run paths
+    test_sql = str(run_dir / "final_test.sql")
+    test_pkl = str(run_dir / "final_test.pkl")
+    test_inference(cfg, model, test_loader, test_sql, test_pkl, device)
+
+    # Upload final best checkpoint to W&B
+    best_ckpt = os.path.join(ckpt_dir, cfg.checkpointing.best_filename)
+    if os.path.exists(best_ckpt):
+        log_model_artifact(best_ckpt, artifact_name=f"{cfg.name}-best",
+                           metadata={"final_dev_f1": f1, "final_dev_em": em,
+                                     "final_dev_sql_em": sql_em})
+    end_run()
+
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    metrics = {"record_f1": f1, "record_em": em, "sql_em": sql_em, "error_rate": err}
+    return f1, run_dir, metrics
+
+
+def _print_results_table(results):
+    """Print a comparison table of all config runs."""
+    print(f"\n{'='*70}")
+    print("Config Comparison")
+    print(f"{'='*70}")
+    print(f"{'Config':<30} {'Record F1':>10} {'Record EM':>10} {'SQL EM':>10}")
+    print(f"{'-'*30} {'-'*10} {'-'*10} {'-'*10}")
+    for name, metrics in results:
+        print(f"{name:<30} {metrics['record_f1']:>10.4f} {metrics['record_em']:>10.4f} {metrics['sql_em']:>10.4f}")
+    print(f"{'='*70}\n")
+
+
+def _copy_best_outputs(run_dir):
+    """Copy best config's outputs to submission paths."""
+    pairs = [
+        (run_dir / "final_dev.sql", "results/t5_scr_dev.sql"),
+        (run_dir / "final_dev.pkl", "records/t5_scr_dev.pkl"),
+        (run_dir / "final_test.sql", "results/t5_scr_test.sql"),
+        (run_dir / "final_test.pkl", "records/t5_scr_test.pkl"),
+    ]
+    for src, dst in pairs:
+        src = Path(src)
+        if src.exists():
+            shutil.copy2(str(src), dst)
+            print(f"  {src.name} -> {dst}")
+        else:
+            print(f"  WARNING: {src} not found, skipping")
+
+
+def main():
+    cli = parse_args()
+
+    # Pre-flight: verify GPU is free
+    _preflight_check()
+
+    # Determine config sequence
+    if cli.configs:
+        config_names = [c.strip() for c in cli.configs.split(",")]
+    else:
+        config_names = [cli.config]
+
+    print(f"Config sequence: {config_names}")
+    print(f"Sequential auto-batch: {len(config_names)} config(s)\n")
+
+    # Track best across configs
+    best_f1 = -1.0
+    best_config_name = None
+    best_run_dir = None
+    results_table = []
+
+    for i, config_name in enumerate(config_names):
+        print(f"\n{'='*60}")
+        print(f"[{i+1}/{len(config_names)}] Config: {config_name}")
+        print(f"{'='*60}\n")
+
+        cfg = load_config(config_name)
+        apply_cli_overrides(cfg, cli)
+
+        f1, run_dir, metrics = _run_single_config(cfg, cli)
+
+        if f1 is not None:
+            results_table.append((config_name, metrics))
+            if f1 > best_f1:
+                best_f1 = f1
+                best_config_name = config_name
+                best_run_dir = run_dir
+        else:
+            print(f"Config {config_name} was interrupted, skipping.")
+
+        # Check STOP file between configs
+        if _check_stop():
+            print("Stop requested between configs. Ending sequence.")
+            break
+
+    # Print comparison table
+    if results_table:
+        _print_results_table(results_table)
+
+    # Copy best config's outputs to submission paths
+    if best_run_dir:
+        print(f"Winner: {best_config_name} (Record F1={best_f1:.4f})")
+        print("Copying outputs to submission paths:")
+        _copy_best_outputs(best_run_dir)
+    else:
+        print("No configs completed successfully.")
+
+
+if __name__ == "__main__":
+    from src.utils.gpu_lock import GpuLock
+    with GpuLock():
+        main()
