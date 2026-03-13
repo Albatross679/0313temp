@@ -27,10 +27,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. T5-base model is fine-tuned on NL→SQL training data using existing Part 1 pipeline
   2. Dev set Record F1 and Query EM are computed and compared against T5-small baseline
   3. If T5-base outperforms T5-small, test SQL and records are generated; best model selected for DPO phase
-**Plans**: TBD
+**Plans:** 1 plan
 
 Plans:
-- [ ] 01-01: Fine-tune T5-base and evaluate against T5-small baseline
+- [ ] 01-01-PLAN.md — Fine-tune T5-base, add batch rank tracking, evaluate vs T5-small, finalize test outputs
 
 ### Phase 2: DPO Training
 **Goal**: Best Part 1 model is finalized (DPO-improved or baseline retained) with test SQL and records ready for submission
