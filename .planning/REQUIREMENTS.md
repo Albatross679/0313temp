@@ -1,7 +1,7 @@
 # Requirements: CSE 5525 Assignment 3 Completion
 
 **Defined:** 2026-03-13
-**Core Value:** Get the assignment fully submission-ready — complete report with real metrics, DPO-improved Part 1 model, and all required output files.
+**Core Value:** Get the assignment fully submission-ready -- complete report with real metrics, DPO-improved Part 1 model, and all required output files.
 
 ## v1 Requirements
 
@@ -34,7 +34,7 @@
 
 ## v2 Requirements
 
-None — this is a one-shot assignment submission.
+None -- this is a one-shot assignment submission.
 
 ## Out of Scope
 
@@ -43,33 +43,33 @@ None — this is a one-shot assignment submission.
 | Retraining Part 2 (T5 from scratch) | Already has satisfactory test outputs |
 | Retraining Part 3 (LLM prompting) | Already has satisfactory test outputs |
 | New model architectures beyond DPO | Assignment scope is fixed |
-| Hyperparameter sweep for DPO | Time constraint — run best-guess config |
+| Hyperparameter sweep for DPO | Time constraint -- run best-guess config |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| DPO-01 | — | Pending |
-| DPO-02 | — | Pending |
-| DPO-03 | — | Pending |
-| DPO-04 | — | Pending |
-| DPO-05 | — | Pending |
-| DPO-06 | — | Pending |
-| DPO-07 | — | Pending |
-| RPT-01 | — | Pending |
-| RPT-02 | — | Pending |
-| RPT-03 | — | Pending |
-| RPT-04 | — | Pending |
-| VIZ-01 | — | Pending |
-| VIZ-02 | — | Pending |
-| ANL-01 | — | Pending |
-| ANL-02 | — | Pending |
+| DPO-01 | Phase 1 | Pending |
+| DPO-02 | Phase 1 | Pending |
+| DPO-03 | Phase 1 | Pending |
+| DPO-04 | Phase 1 | Pending |
+| DPO-05 | Phase 1 | Pending |
+| DPO-06 | Phase 1 | Pending |
+| DPO-07 | Phase 1 | Pending |
+| RPT-01 | Phase 2 | Pending |
+| RPT-02 | Phase 2 | Pending |
+| RPT-03 | Phase 2 | Pending |
+| RPT-04 | Phase 2 | Pending |
+| VIZ-01 | Phase 2 | Pending |
+| VIZ-02 | Phase 2 | Pending |
+| ANL-01 | Phase 3 | Pending |
+| ANL-02 | Phase 3 | Pending |
 
 **Coverage:**
 - v1 requirements: 15 total
-- Mapped to phases: 0
-- Unmapped: 15 ⚠️
+- Mapped to phases: 15
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-13*
-*Last updated: 2026-03-13 after initial definition*
+*Last updated: 2026-03-13 after roadmap creation*
