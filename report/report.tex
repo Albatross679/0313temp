@@ -205,22 +205,22 @@ plus      -0.5ex minus -.2ex}{0.5ex plus
 
 \begin{table}[h!]
 \centering
-\begin{tabular}{p{3.5cm}p{10cm}}
+\begin{tabular}{p{2.5cm}p{5.5cm}p{5.5cm}}
 \toprule
-Resource & Description \\
+Resource & VM\,1 (Parts 1 \& 2) & VM\,2 (Part 3) \\
 \midrule
-OS & Ubuntu 22.04 LTS (Linux 5.4, x86\_64) \\
-GPU & NVIDIA A40 (46\,GB VRAM), 1 of 1 available \\
-GPU driver & NVIDIA 535.129.03 \\
-CPU & AMD EPYC 7H12 64-Core (128 threads) \\
-RAM & 1\,TB system memory \\
-Storage & 50\,GB overlay (NVMe-backed) \\
-Software & Python 3.10, PyTorch 2.10, Transformers 5.2 \\
-CUDA / cuDNN & 12.2 / 9.1 \\
-Batch sizing & Automatic per-config tuning to maximize VRAM utilization \\
+OS & Ubuntu 22.04 LTS (Linux 5.4, x86\_64) & Ubuntu 24.04 LTS (Linux 6.8, x86\_64) \\
+GPU & NVIDIA A40 (46\,GB VRAM) & NVIDIA RTX 5090 (32\,GB VRAM) \\
+GPU driver & 535.129.03 & 590.48.01 \\
+CPU & AMD EPYC 7H12 64-Core (128 threads) & AMD EPYC 9654 96-Core (384 threads) \\
+RAM & 1\,TB & 755\,GB \\
+Storage & 50\,GB overlay (NVMe) & 60\,GB overlay (NVMe) \\
+Software & Python 3.10, PyTorch 2.10, Transformers 5.2 & Python 3.12, PyTorch 2.10, Transformers 5.3 \\
+CUDA / cuDNN & 12.2 / 9.1 & 12.8 / 9.1 \\
+Batch sizing & \multicolumn{2}{c}{Automatic per-config tuning to maximize VRAM utilization} \\
 \bottomrule
 \end{tabular}
-\caption{Hardware and software environment used for all experiments (Parts 1--3).}
+\caption{Hardware and software environment used for all experiments. Parts 1 \& 2 (T5 training) ran on VM\,1; Part 3 (LLM prompting) ran on VM\,2.}
 \label{tab:hardware}
 \end{table}
 
@@ -322,26 +322,44 @@ For all entries, you need to specify the corresponding values of $k$.
 \toprule
 \textbf{Shot} & \textbf{Prompt} \\
 \midrule
-    \textcolor{gray}{k} & \textcolor{gray}{Everything in this table serves as a placeholder to show an example of prompt and formatting. It is just for reference, and you need to remove all the text here and put your own prompt.} \\
-    & \textcolor{gray}{You can design and experiment with different prompts to find what works better. In the prompt, it could be helpful to provide clear instructions, provide the relevant context, and you can also provide examples. You need to experiment with different numbers of examples. In this prompt, two examples are provided below ($k = 2$, and this is 2-shot prompting):} \\
-    & \textcolor{gray}{Instruction: [instruction-sentence]} \\
-    & \textcolor{gray}{Response: [response]} \\
-    & \textcolor{gray}{Instruction: [instruction-sentence]} \\
-    & \textcolor{gray}{Response: [response]} \\
+    $k=0$ & \texttt{<start\_of\_turn>user} \\
+    & Database schema: \\
+    & CREATE TABLE city (\ldots); \ldots{} {\small(25 tables)} \\
     & \\
-    & \textcolor{gray}{You can choose to provide additional instruction or not before providing the instruction to the model as well. Below is the task that you are asking the model to perform:} \\
-    & \textcolor{gray}{Instruction: [instruction-sentence]} \\
-    & \textcolor{gray}{Response: } \\
+    & Translate the following question into SQL. Output only the SQL query. \\
+    & \\
+    & Question: \{query\} \\
+    & SQL:\texttt{<end\_of\_turn>} \\
+    & \texttt{<start\_of\_turn>model} \\
+\midrule
+    $k \geq 1$ & \texttt{<start\_of\_turn>user} \\
+    & Database schema: \\
+    & CREATE TABLE city (\ldots); \ldots{} {\small(25 tables)} \\
+    & \\
+    & Translate the following question into SQL. Output only the SQL query. \\
+    & \\
+    & Question: \{example$_1$ NL\} \\
+    & SQL: \{example$_1$ SQL\} \\
+    & \\
+    & \ldots{} {\small(repeated $k$ times)} \\
+    & \\
+    & Question: \{query\} \\
+    & SQL:\texttt{<end\_of\_turn>} \\
+    & \texttt{<start\_of\_turn>model} \\
 \bottomrule
 \end{tabular}
-\caption{Instruction prompts used for zero- and/or few-shot prompting.}
+\caption{Instruction prompts used for zero- and few-shot prompting. The prompt uses the Gemma chat format. The database schema provides all 25 table definitions as CREATE TABLE DDL. For $k \geq 1$, examples are inserted between the instructions and the target question. The same template is used for both random and BM25 example selection; only the choice of examples differs.}
 \label{tab:icl_prompts}
 \end{table}
 
 
 \paragraph{Example selections:} Please provide a clear, detailed, and succinct description of how you selected the examples when $k > 0$.
 
-\textcolor{gray}{Remove this text and place your description here!}
+We evaluated two example selection strategies for $k > 0$:
+
+\textbf{Random selection:} $k$ examples are sampled uniformly at random from the 4{,}225 training pairs. The same fixed set is used for all queries in a given run (seed = 42).
+
+\textbf{BM25 per-query selection:} We build a BM25Okapi index (\texttt{rank\_bm25}) over whitespace-tokenized, lowercased training questions. For each dev/test query, the index scores all training questions by term overlap and we select the top-$k$ highest-scoring examples. This provides each query with semantically similar demonstrations whose SQL patterns are more likely to transfer. BM25 selection at $k=3$ improved Record F1 from 11.96\% (random) to 17.35\% (+45\% relative).
 
 
 
@@ -369,21 +387,27 @@ When reporting your results in \autoref{tab:results}, you will need to refer to 
 \toprule
 \textbf{Prompt} \\
 \midrule
-    \textcolor{gray}{Everything in this table serves as a placeholder to show an example of prompt and formatting. It is just for reference, and you need to remove all the text here and put your own prompt.} \\
-    \textcolor{gray}{You can design and experiment with different prompts to find what works better.} \textcolor{ForestGreen}{In the prompt, it could be helpful to provide clear instructions, provide the relevant context, and you can also provide examples.} \textcolor{gray}{You need to experiment with different numbers of examples. In this prompt, two examples are provided below ($k = 2$, and this is 2-shot prompting):} \\
-   \textcolor{gray}{Instruction: [instruction-sentence]} \\
-    \textcolor{gray}{Response: [response]} \\
-    \textcolor{gray}{Instruction: [instruction-sentence]} \\
-    \textcolor{gray}{Response: [response]} \\
+    \texttt{<start\_of\_turn>user} \\
+    \textcolor{Blue}{Database schema:} \\
+    \textcolor{Blue}{CREATE TABLE city (\ldots); \ldots{} (25 tables)} \\
     \\
-   \textcolor{Blue}{You can choose to provide additional instruction or not before providing the instruction to the model as well. Below is the task that you are asking the model to perform:} \\
-    \textcolor{gray}{Instruction: [instruction-sentence]} \\
-    \textcolor{gray}{Response: } \\
+    \textcolor{ForestGreen}{Translate the following question into SQL. Output only the SQL query.} \\
+    \\
+    Question: \{BM25-selected example$_1$ NL\} \\
+    SQL: \{BM25-selected example$_1$ SQL\} \\
+    \\
+    Question: \{BM25-selected example$_2$ NL\} \\
+    SQL: \{BM25-selected example$_2$ SQL\} \\
+    \\
+    Question: \{BM25-selected example$_3$ NL\} \\
+    SQL: \{BM25-selected example$_3$ SQL\} \\
+    \\
+    Question: \{query\} \\
+    SQL:\texttt{<end\_of\_turn>} \\
+    \texttt{<start\_of\_turn>model} \\
 \bottomrule
 \end{tabular}
-\caption{The best prompt.
-{\textcolor{gray}{Remove this text and place a short description of your best prompt. If it is the same as the prompt in \autoref{tab:icl_prompts}, clearly mention the value of $k$. If it is not the same, state explicitly how you built it.}}
-}
+\caption{The best prompt (BM25 $k=3$). Same template as \autoref{tab:icl_prompts} with $k=3$ BM25 per-query selected examples. \textcolor{Blue}{Blue} = database schema (ablated in ``No schema''). \textcolor{ForestGreen}{Green} = task instructions (ablated in ``No instructions'').}
 \label{tab:best_prompt}
 \end{table}
 
@@ -395,15 +419,14 @@ When reporting your results in \autoref{tab:results}, you will need to refer to 
 \toprule
 \textbf{Color} & \textbf{Description} \\
 \midrule
-\textcolor{ForestGreen}{ForestGreen} & \textcolor{ForestGreen}{This is the description for the ablation experiment where the part in ForestGreen is ablated from the best prompt.} \\
-\textcolor{Blue}{Blue} & \textcolor{Blue}{This is the description for the ablation experiment where the part in Blue is ablated from the best prompt.} \\
-& \textcolor{Blue}{In the ablation experiment, we experimented with swapping the order of both sentences, because...} \\
-% \midrule
+\textcolor{ForestGreen}{ForestGreen} & \textcolor{ForestGreen}{\textbf{No instructions:} Removed the task instruction line (``Translate the following question into SQL. Output only the SQL query.''). Without this instruction, the model has no explicit directive to produce SQL, resulting in 100\% SQL errors and F1 dropping from 17.35\% to 11.80\%.} \\
+\midrule
+\textcolor{Blue}{Blue} & \textcolor{Blue}{\textbf{No schema:} Removed the full database schema (all 25 CREATE TABLE DDL statements). Without schema context, the model cannot reference correct table and column names, increasing the SQL error rate from 86\% to 99\% and reducing F1 from 17.35\% to 11.80\%.} \\
+\midrule
+-- & \textbf{Schema only:} Removed both \textcolor{ForestGreen}{instructions} and all examples ($k=0$), keeping only the \textcolor{Blue}{schema}. The model receives table definitions but no task framing or demonstrations. Despite the lowest error rate (70\%), F1 is worst at 11.37\% because the model generates syntactically valid but semantically incorrect SQL. \\
 \bottomrule
 \end{tabular}
-\caption{Ablation variants.
-{\textcolor{gray}{Put a clear description of the ablation experiments you did. If it helps to describe more clearly, you can also provide an example of the relevant part of the prompt before and after the ablation.}
-}}
+\caption{Ablation variants applied to the best prompt (BM25 $k=3$). Each condition removes one or more components to measure its contribution to overall performance.}
 \label{tab:ablation_explanation}
 \end{table}
 

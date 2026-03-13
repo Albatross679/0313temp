@@ -1,0 +1,10 @@
+output/
+!output/t5_ft_restricted_v3/
+!output/t5_ft_restricted_v3/checkpoints/
+!output/t5_ft_restricted_v3/checkpoints/model_best.pt
+!output/t5_scr_restricted/
+!output/t5_scr_restricted/checkpoints/
+!output/t5_scr_restricted/checkpoints/model_best.pt
+wandb/
+__pycache__/
+*.pyc

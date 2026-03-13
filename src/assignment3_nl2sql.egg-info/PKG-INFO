@@ -1,0 +1,23 @@
+Metadata-Version: 2.4
+Name: assignment3-nl2sql
+Version: 0.1.0
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.26.0
+Requires-Dist: torch>=2.1.2
+Requires-Dist: tokenizers>=0.19.1
+Requires-Dist: transformers>=4.40.0
+Requires-Dist: accelerate>=0.29.3
+Requires-Dist: nltk>=3.8.1
+Requires-Dist: tqdm>=4.66.1
+Requires-Dist: wandb>=0.15.10
+Requires-Dist: matplotlib>=3.8.0
+Requires-Dist: plotly>=5.18.0
+Requires-Dist: seaborn>=0.13.2
+Requires-Dist: bitsandbytes>=0.43.1
+Requires-Dist: sentencepiece>=0.2.0
+Requires-Dist: psutil>=5.9.0
+Requires-Dist: nvidia-ml-py>=12.0.0
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: hypothesis; extra == "dev"
+Requires-Dist: tensorboard; extra == "dev"
