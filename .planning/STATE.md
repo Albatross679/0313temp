@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 Phase: 1 of 4 (T5-Base Fine-Tuning)
 Plan: 0 of 1 in current phase
 Status: Ready to plan
-Last activity: 2026-03-13 -- Roadmap restructured (added Phase 1, renumbered)
+Last activity: 2026-03-14 - Completed quick task 1: Investigate why SQL exact match rate is so low via W&B logs and online research
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -77,6 +77,12 @@ None yet.
 - T5-base is ~220M params vs T5-small ~60M — may need adjusted batch size for GPU VRAM
 - DPO preference data generation strategy needs implementation details (sampling temperature, number of samples per query)
 - Timeline is tight (due ~2026-03-14/15)
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 1 | Investigate why SQL exact match rate is so low via W&B logs and online research | 2026-03-14 | c0d590c | [1-investigate-why-sql-exact-match-rate-is-](./quick/1-investigate-why-sql-exact-match-rate-is-/) |
 
 ## Session Continuity
 
