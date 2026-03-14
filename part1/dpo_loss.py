@@ -6,13 +6,23 @@ Implements:
   - dpo_train_step: single training step combining forward, loss, backward
 """
 
+from contextlib import nullcontext
+
 import torch
 import torch.nn.functional as F
 
 
+def _amp_context(use_amp, device):
+    """Return bf16 autocast context if AMP enabled and on CUDA, else no-op."""
+    if use_amp and 'cuda' in str(device):
+        return torch.amp.autocast('cuda', dtype=torch.bfloat16)
+    return nullcontext()
+
+
 def compute_restricted_log_probs(model, encoder_input, encoder_mask,
-                                  decoder_input, decoder_targets, pad_idx=0):
-    """Compute per-sequence log probability using restricted vocab forward pass.
+                                  decoder_input, decoder_targets, pad_idx=0,
+                                  per_token=False):
+    """Compute log probability using restricted vocab forward pass.
 
     Args:
         model: T5ForFlightSQL instance (policy or reference)
@@ -21,9 +31,14 @@ def compute_restricted_log_probs(model, encoder_input, encoder_mask,
         decoder_input: (B, T_dec) = [BOS] + targets[:-1]
         decoder_targets: (B, T_dec) original token IDs (not remapped)
         pad_idx: padding token ID (0 for T5)
+        per_token: if True, return (token_log_probs, mask) of shape (B, T)
+                   instead of summed (B,) sequence log probs
 
     Returns:
-        seq_log_probs: (B,) SUM of per-token log probs for each sequence
+        If per_token=False (default):
+            seq_log_probs: (B,) SUM of per-token log probs for each sequence
+        If per_token=True:
+            (token_log_probs, mask): tuple of (B, T) tensors
     """
     # restricted_forward returns logits in restricted vocab space: (B, T, V_sql)
     logits = model.restricted_forward(encoder_input, encoder_mask, decoder_input)
@@ -31,17 +46,25 @@ def compute_restricted_log_probs(model, encoder_input, encoder_mask,
     # Remap targets to restricted vocab indices
     remapped_targets = model.remap_targets(decoder_targets)  # (B, T)
 
+    # Clamp unmapped tokens (-1) to 0 so gather doesn't crash; mask them out below
+    unmapped_mask = (remapped_targets == -1)
+    remapped_targets = remapped_targets.clamp(min=0)
+
     # Per-token log probs: gather log_softmax at target positions
     log_probs = logits.log_softmax(dim=-1)  # (B, T, V_sql)
-    per_token = torch.gather(
+    token_log_probs = torch.gather(
         log_probs, dim=2, index=remapped_targets.unsqueeze(2)
     ).squeeze(2)  # (B, T)
 
-    # Mask padding tokens (use ORIGINAL targets for pad detection, not remapped)
+    # Mask padding tokens and unmapped tokens
     mask = (decoder_targets != pad_idx).float()
+    mask = mask * (~unmapped_mask).float()
+
+    if per_token:
+        return token_log_probs, mask  # (B, T), (B, T)
 
     # Sum per-token log probs for sequence-level log probability
-    seq_log_probs = (per_token * mask).sum(dim=-1)  # (B,)
+    seq_log_probs = (token_log_probs * mask).sum(dim=-1)  # (B,)
     return seq_log_probs
 
 
@@ -69,7 +92,8 @@ def dpo_loss(policy_chosen_logps, policy_rejected_logps,
 
 
 def dpo_train_step(policy_model, ref_model, batch, optimizer,
-                   beta=0.1, grad_clip_norm=1.0, device="cuda"):
+                   beta=0.1, grad_clip_norm=1.0, device="cuda",
+                   use_amp=True):
     """Single DPO training step.
 
     Args:
@@ -81,6 +105,7 @@ def dpo_train_step(policy_model, ref_model, batch, optimizer,
         beta: DPO temperature
         grad_clip_norm: max gradient norm for clipping
         device: target device
+        use_amp: enable bf16 autocast
 
     Returns:
         dict with: loss, reward_margin, reward_accuracy,
@@ -90,23 +115,26 @@ def dpo_train_step(policy_model, ref_model, batch, optimizer,
         t.to(device) for t in batch
     ]
 
+    amp_ctx = _amp_context(use_amp, device)
+
     # Policy model forward (with gradients)
-    policy_chosen_logps = compute_restricted_log_probs(
-        policy_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
-    policy_rejected_logps = compute_restricted_log_probs(
-        policy_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
+    with amp_ctx:
+        policy_chosen_logps = compute_restricted_log_probs(
+            policy_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
+        policy_rejected_logps = compute_restricted_log_probs(
+            policy_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
 
     # Reference model forward (no gradients)
-    with torch.no_grad():
+    with torch.no_grad(), _amp_context(use_amp, device):
         ref_chosen_logps = compute_restricted_log_probs(
             ref_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
         ref_rejected_logps = compute_restricted_log_probs(
             ref_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
 
-    # DPO loss
+    # DPO loss (computed in fp32 for stability)
     loss, chosen_reward_mean, rejected_reward_mean = dpo_loss(
-        policy_chosen_logps, policy_rejected_logps,
-        ref_chosen_logps, ref_rejected_logps, beta=beta)
+        policy_chosen_logps.float(), policy_rejected_logps.float(),
+        ref_chosen_logps.float(), ref_rejected_logps.float(), beta=beta)
 
     # Backward + grad clip + optimizer step
     optimizer.zero_grad()
@@ -133,7 +161,8 @@ def dpo_train_step(policy_model, ref_model, batch, optimizer,
 
 
 def dpo_train_step_lora(policy_model, batch, optimizer,
-                        beta=0.1, grad_clip_norm=1.0, device="cuda"):
+                        beta=0.1, grad_clip_norm=1.0, device="cuda",
+                        use_amp=True):
     """Single DPO training step for LoRA policy (single model, no separate ref).
 
     Uses peft disable_adapter_layers() to get reference logprobs from the
@@ -147,6 +176,7 @@ def dpo_train_step_lora(policy_model, batch, optimizer,
         beta: DPO temperature
         grad_clip_norm: max gradient norm for clipping
         device: target device
+        use_amp: enable bf16 autocast
 
     Returns:
         dict with: loss, reward_margin, reward_accuracy,
@@ -156,14 +186,17 @@ def dpo_train_step_lora(policy_model, batch, optimizer,
         t.to(device) for t in batch
     ]
 
+    amp_ctx = _amp_context(use_amp, device)
+
     # Policy forward (LoRA active)
-    policy_chosen_logps = compute_restricted_log_probs(
-        policy_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
-    policy_rejected_logps = compute_restricted_log_probs(
-        policy_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
+    with amp_ctx:
+        policy_chosen_logps = compute_restricted_log_probs(
+            policy_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
+        policy_rejected_logps = compute_restricted_log_probs(
+            policy_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
 
     # Reference forward (LoRA disabled = base model)
-    with torch.no_grad():
+    with torch.no_grad(), _amp_context(use_amp, device):
         policy_model.model.disable_adapter_layers()
         ref_chosen_logps = compute_restricted_log_probs(
             policy_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
@@ -171,10 +204,10 @@ def dpo_train_step_lora(policy_model, batch, optimizer,
             policy_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
         policy_model.model.enable_adapter_layers()
 
-    # DPO loss
+    # DPO loss (computed in fp32 for stability)
     loss, chosen_reward_mean, rejected_reward_mean = dpo_loss(
-        policy_chosen_logps, policy_rejected_logps,
-        ref_chosen_logps, ref_rejected_logps, beta=beta)
+        policy_chosen_logps.float(), policy_rejected_logps.float(),
+        ref_chosen_logps.float(), ref_rejected_logps.float(), beta=beta)
 
     # Backward + grad clip + optimizer step
     optimizer.zero_grad()
