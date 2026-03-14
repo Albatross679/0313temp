@@ -546,13 +546,7 @@ SQL evaluation threads & 128 \\
 
 \newpage
 
-\paragraph{Qualitative Error Analysis:} Conduct a detailed error analysis for each of the three models. Identify common error types and discuss possible reasons for these errors in \autoref{tab:qualitative}.
-
-You must identify at least three classes of errors for the queries, and use examples to illustrate them.
-It must be clear what model makes the errors you are analyzing.
-If you identified the same type of error for different models, you don't need to duplicate the descriptions, but you need to clearly specify an example for each of the model, indicate the statistics for each model, and specify to which model each statistics correspond to.
-You may add more rows to the table.
-
+\paragraph{Qualitative Error Analysis:} We identified five common error patterns across the three models, summarized in \autoref{tab:qualitative}.
 
 \begin{landscape}
 \begin{table}
@@ -561,16 +555,124 @@ You may add more rows to the table.
     \toprule
     \textbf{Error Type} & \textbf{Relevant Models}& \textbf{Example Of Error} & \textbf{Error Description} & \textbf{Statistics} \\
     \midrule
-    \textcolor{gray}{Error name} & \textcolor{gray}{ICL, T5 fine-tuned or T5 from scratch} & \textcolor{gray}{Snippet from datapoint examplifying error} & \textcolor{gray}{Describe the error in natural language} & \textcolor{gray}{Provide statistics in the form ``COUNT/TOTAL'' on the prevalence of the error. TOTAL is the number of relevant examples (e.g. number of queries, for query-level error), and COUNT is the number of examples that showed this error.}  \\
-    & & & & \textcolor{gray}{If an error type applies to several models, you should provide the statistics in the form ``MODEL NAME: COUNT/TOTAL''.} \\
+    Missing comparison operator
+    & T5 fine-tuned, T5 from scratch
+    & NL: ``flights from salt lake city to new york city arriving before 6pm'' \newline
+      GT: \texttt{arrival\_time < 1800} \newline
+      Pred: \texttt{arrival\_time \space\space 1800}
+    & The model drops comparison operators (\texttt{<}, \texttt{>}, \texttt{<=}, \texttt{>=}) from inequality predicates, producing syntactically invalid SQL.
+      Root cause: the T5 SentencePiece tokenizer treats angle brackets as special characters, and beam search decoding fails to emit them.
+    & T5-FT: 26/466 (5.6\%) \newline
+      T5-Scr: 27/466 (5.8\%) \\
     \midrule
-    &  &  &  & \\
+    Query truncation / incomplete generation
+    & ICL (dominant)
+    & NL: ``show me the afternoon flights from washington to boston'' \newline
+      GT: \texttt{SELECT DISTINCT flight\_1.flight\_id FROM flight flight\_1, airport\_service ...} \newline
+      Pred: \texttt{SELECT DISTINCT flight\_1.flight\_id}
+    & The model generates only a \texttt{SELECT} fragment without \texttt{FROM}/\texttt{WHERE} clauses, producing incomplete SQL.
+      For ICL, Gemma 2B's \texttt{max\_new\_tokens} limit truncates long queries.
+      The resulting ``no such column'' errors are caused by the missing \texttt{FROM} clause, not by incorrect column names.
+    & ICL: 383/466 (82.2\%) \\
+    \midrule
+    Wrong table / column reference
+    & T5 fine-tuned, ICL
+    & NL: ``i would like to plan a flight from boston to denver'' \newline
+      GT FROM: \texttt{flight flight\_1, airport\_service airport\_service\_1, city city\_1, airport\_service airport\_service\_2, city city\_2} \newline
+      Pred FROM: \texttt{flight flight\_1, airport\_service airport\_service\_1, city city\_2} \newline
+      Error: \texttt{no such column: city\_1.city\_code}
+    & The predicted SQL references table aliases or column names not defined in the \texttt{FROM} clause.
+      The model generates plausible alias patterns (e.g., \texttt{city\_1}) but omits the corresponding table declaration, causing execution errors.
+    & T5-FT: 16/466 (3.4\%) \newline
+      ICL: 5/466 (1.1\%) \\
+    \midrule
+    Wrong JOIN structure
+    & T5 fine-tuned, T5 from scratch, ICL
+    & NL: ``flights from boston to san francisco with the maximum number of stops'' \newline
+      GT: \texttt{...stops = (SELECT MAX(stops)...)} \newline
+      Pred: \texttt{...stops = 0} \newline
+      Returns 4 records instead of 2
+    & The query executes successfully but returns wrong records due to incorrect subquery logic, missing table joins, or wrong aggregation.
+      The model understands the general query pattern but fails on complex multi-table relationships and subqueries.
+    & T5-FT: 83/466 (17.8\%) \newline
+      T5-Scr: 144/466 (30.9\%) \newline
+      ICL: 35/466 (7.5\%) \\
+    \midrule
+    Wrong predicate values
+    & T5 fine-tuned, T5 from scratch, ICL
+    & NL: ``flights available tomorrow from denver to philadelphia'' \newline
+      GT: \texttt{month\_number = 1 AND day\_number = 20} \newline
+      Pred: \texttt{month\_number = 2 AND day\_number = 20} \newline
+      Returns 24 records instead of 23
+    & The SQL structure is correct but literal values in \texttt{WHERE} clauses are wrong---wrong month, city name, or time value.
+      The model understands query structure but misinterprets specific values from the natural language input.
+      This is a subset of the semantic errors above, identified by matching \texttt{FROM} tables.
+    & Subset of semantic errors. \newline
+      T5-FT: 83/466 total semantic \newline
+      T5-Scr: 144/466 total semantic \newline
+      ICL: 35/466 total semantic \\
     \bottomrule
   \end{tabular}
-  \caption{Use this table for your qualitative analysis on the dev set, for all the three models.}\label{tab:qualitative}
+  \caption{Qualitative error analysis on the dev set (466 queries) for all three models. Statistics use COUNT/TOTAL format where TOTAL is the full dev set size. Categories are mutually exclusive: each query is classified into exactly one category per model.}\label{tab:qualitative}
 \end{table}
 \end{landscape}
 
+
+\newpage
+
+\section{Engineering Issues}
+
+\autoref{tab:issues_performance} documents the performance-related engineering issues encountered during development, along with their root causes and resolutions.
+
+\begin{landscape}
+\begin{table}
+\centering
+\small
+\begin{tabular}{p{3.2cm}p{8cm}p{8cm}}
+\toprule
+\textbf{Issue} & \textbf{Description} & \textbf{Resolution} \\
+\midrule
+GPU OOM from concurrent sessions & AutoBatch maximizes VRAM for the first GPU task; a second task (training, eval, or inference) crashes with CUDA OOM because no mechanism prevents concurrent GPU access. & File-based GPU lock using Linux \texttt{flock}. All training entry points acquire the lock automatically; a second task blocks and waits instead of crashing. \\
+\midrule
+Training process hung after completion & Training PID blocks indefinitely on \texttt{futex\_wait\_queue\_me} during \texttt{gc.collect()} / \texttt{torch.cuda.empty\_cache()} after W\&B marks the run FINISHED, caused by a PyTorch/CUDA threading deadlock during GPU memory cleanup. Sequential scripts cannot proceed. & Watchdog co-process polls W\&B status every 60\,s and kills the training process if still alive 5\,min after FINISHED. Exit codes 137/143 treated as success. \\
+\midrule
+Buffered stdout under nohup & Python buffers stdout when not connected to a TTY (piped or redirected by \texttt{nohup}), so log files show no output for long periods, making monitoring ineffective. & Set \texttt{PYTHONUNBUFFERED=1} before launching Python in the training script. \\
+\bottomrule
+\end{tabular}
+\caption{Performance issues encountered during development.}
+\label{tab:issues_performance}
+\end{table}
+\end{landscape}
+
+\begin{landscape}
+\begin{table}
+\centering
+\footnotesize
+\begin{tabular}{p{3.2cm}p{8.5cm}p{8.5cm}}
+\toprule
+\textbf{Issue} & \textbf{Description} & \textbf{Resolution} \\
+\midrule
+BOS token mismatch & T5 decoder received pad token (ID\,0) as start-of-sequence during inference instead of \texttt{<extra\_id\_0>} (ID\,32099) used during training. The model never learned to predict \texttt{SELECT} after pad, so every prediction started mid-query, causing 100\% SQL execution error rate. & Added \texttt{decoder\_start\_token\_id=32099} to all \texttt{model.generate()} calls so inference uses the same BOS token as training. \\
+\midrule
+\texttt{no\_repeat\_ngram\_size} blocks valid SQL & \texttt{no\_repeat\_ngram\_size=3} structurally prevented generating valid multi-join SQL. 100\% of ground truth queries contain repeated 3-grams (e.g., \texttt{airport\_code AND} in multiple join conditions), so the constraint corrupted every multi-join query. & Disabled \texttt{no\_repeat\_ngram\_size} (set to 0). \\
+\midrule
+LoRA checkpoint drops adapter weights & Post-training final eval deleted the in-memory model, reloaded from checkpoint, then re-applied LoRA with fresh random adapters. Checkpoints intentionally stripped \texttt{lora\_A}/\texttt{lora\_B} keys, so reloaded models had untrained adapters, collapsing F1 from $\sim$0.516 to 0.118. & Removed LoRA key stripping from \texttt{state\_dict()}; checkpoints now preserve adapter weights. Updated reload path to re-apply LoRA then load checkpoint including adapters. \\
+\midrule
+MLP head device mismatch & \texttt{T5ForFlightSQLWithMLP} creates MLP and LayerNorm layers on CPU while the base T5 model is already on GPU, causing \texttt{RuntimeError} at the first forward pass when CUDA tensors mix with CPU parameters. & Added \texttt{model.to(device)} after creating the MLP wrapper in both initial creation and checkpoint loading paths. \\
+\midrule
+Repetition penalty too aggressive & \texttt{repetition\_penalty=2.5} divided each token's logit by 2.5 after first use. SQL reuses tokens like \texttt{AND}, \texttt{.}, \texttt{=} extensively, so heavy penalization distorted the probability distribution away from valid SQL patterns. & Set \texttt{repetition\_penalty=1.0} (disabled). \\
+\midrule
+Repetition penalty zero config & Config set \texttt{repetition\_penalty=0} instead of 1.0. Since HuggingFace applies the penalty as a divisor to token logits, this would cause division by zero at runtime. & Changed to \texttt{repetition\_penalty=1.0} (no penalty) before launching any runs. \\
+\midrule
+MLP checkpoint state\_dict mismatch & \texttt{save\_model()} saved the full MLP wrapper's \texttt{state\_dict()} (including \texttt{mlp\_norm}, \texttt{mlp.*} keys) instead of the inner T5 model's. Subsequent non-MLP trials crashed loading checkpoints with unexpected keys, wasting 4 of 8 sweep trials. & Changed \texttt{save\_model()} to always save \texttt{inner.state\_dict()} (vanilla T5 weights), consistent with the LoRA path. \\
+\midrule
+\texttt{max\_new\_tokens} truncation & \texttt{max\_new\_tokens=256} truncated 26\% of dev targets (120/466 queries exceed 256 tokens; max target length is 511). Complex multi-join queries were cut off mid-generation, producing incomplete SQL. & Increased \texttt{max\_new\_tokens} to 512 to cover the full target length range. \\
+\bottomrule
+\end{tabular}
+\caption{Model issues encountered during development.}
+\label{tab:issues_model}
+\end{table}
+\end{landscape}
 
 
 \end{document}
