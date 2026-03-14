@@ -38,6 +38,17 @@
 - [x] **ANL-01**: Identify common SQL error patterns across all 3 parts
 - [x] **ANL-02**: Fill qualitative error analysis table with concrete examples and statistics
 
+### RL Fine-Tuning (Phase 5)
+
+- [ ] **RL-01**: Create T5GRPOConfig dataclass with RL-specific fields (algorithm, group_size, epsilon, reward_type, stability params)
+- [ ] **RL-02**: Implement GRPO loss function with PPO-style clipping and diagnostics
+- [ ] **RL-03**: Implement CISPO loss function with detached IS weight clipping (per-token and sequence-level)
+- [ ] **RL-04**: Implement group sampling with constrained decoding (G=8 completions per query)
+- [ ] **RL-05**: Implement graded execution reward (+1.0/+0.5/-0.5/-1.0) via in-memory SQLite
+- [ ] **RL-06**: Build complete RL training loop with W&B logging, early stopping, gradient spike detection, and LoRA
+- [ ] **RL-07**: Run GRPO and CISPO experiments within 1-2 hour compute budget
+- [ ] **RL-08**: Add RL Fine-Tuning subsection to report with methodology, results, and analysis
+
 ## v2 Requirements
 
 None -- this is a one-shot assignment submission.
@@ -72,12 +83,20 @@ None -- this is a one-shot assignment submission.
 | VIZ-02 | Phase 3 | Pending |
 | ANL-01 | Phase 4 | Complete |
 | ANL-02 | Phase 4 | Complete |
+| RL-01 | Phase 5 | Pending |
+| RL-02 | Phase 5 | Pending |
+| RL-03 | Phase 5 | Pending |
+| RL-04 | Phase 5 | Pending |
+| RL-05 | Phase 5 | Pending |
+| RL-06 | Phase 5 | Pending |
+| RL-07 | Phase 5 | Pending |
+| RL-08 | Phase 5 | Pending |
 
 **Coverage:**
-- v1 requirements: 18 total
-- Mapped to phases: 18
+- v1 requirements: 26 total
+- Mapped to phases: 26
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-13*
-*Last updated: 2026-03-13 after Phase 1 insertion (T5-base fine-tuning)*
+*Last updated: 2026-03-14 after Phase 5 RL Fine-Tuning requirements added*

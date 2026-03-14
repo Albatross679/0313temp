@@ -73,10 +73,26 @@ Plans:
 Plans:
 - [ ] 04-01-PLAN.md — Analyze errors across all 3 models, fill qualitative error analysis table in report
 
+### Phase 5: Explore RL algorithm from Minimax model for Part 1 fine-tuning
+**Goal:** GRPO and CISPO RL training runs completed on best T5-base checkpoint, with results documented in the report's RL Fine-Tuning subsection regardless of outcome
+**Depends on:** Phase 4
+**Requirements**: RL-01, RL-02, RL-03, RL-04, RL-05, RL-06, RL-07, RL-08
+**Success Criteria** (what must be TRUE):
+  1. T5GRPOConfig, GRPO loss, and CISPO loss are implemented following MiniMax-M1 and DeepSeekMath formulations
+  2. Complete RL training pipeline runs with group sampling, execution-based reward, and W&B logging
+  3. Both GRPO and CISPO experiments complete within 1-2 hour compute budget
+  4. Report contains RL Fine-Tuning subsection with methodology, results table, and analysis
+**Plans:** 3 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Create RL config dataclass and GRPO/CISPO loss functions
+- [ ] 05-02-PLAN.md — Build complete RL training loop with group sampling, execution reward, and evaluation
+- [ ] 05-03-PLAN.md — Run GRPO/CISPO experiments and add RL Fine-Tuning subsection to report
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -84,3 +100,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4
 | 2. DPO Training | 0/2 | Not started | - |
 | 3. Metrics and Visualization | 0/2 | Not started | - |
 | 4. Error Analysis | 0/1 | Not started | - |
+| 5. RL Fine-Tuning | 0/3 | Not started | - |
