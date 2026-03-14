@@ -68,10 +68,10 @@ Plans:
 **Success Criteria** (what must be TRUE):
   1. Common SQL error patterns are identified across all three parts with concrete query examples
   2. The qualitative error analysis table in the report is filled with specific examples, error categories, and statistics
-**Plans**: TBD
+**Plans:** 1 plan
 
 Plans:
-- [ ] 04-01: Analyze errors across all parts and complete error analysis table
+- [ ] 04-01-PLAN.md — Analyze errors across all 3 models, fill qualitative error analysis table in report
 
 ## Progress
 
