@@ -86,9 +86,10 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 1 | Investigate why SQL exact match rate is so low via W&B logs and online research | 2026-03-14 | c0d590c | [1-investigate-why-sql-exact-match-rate-is-](./quick/1-investigate-why-sql-exact-match-rate-is-/) |
+| 2 | Split T5 results table into T5-small and T5-base tables with Params (M) column | 2026-03-14 | fd4c0b7 | [2-look-into-part-1-fine-tune-t5-base-model](./quick/2-look-into-part-1-fine-tune-t5-base-model/) |
 
 ## Session Continuity
 
-Last session: 2026-03-14T13:30:25.175Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-03-14T13:52:34Z
+Stopped at: Completed quick-2
 Resume file: None
