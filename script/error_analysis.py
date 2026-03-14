@@ -1,262 +1,393 @@
 #!/usr/bin/env python3
-"""Analyze prediction errors for T5 fine-tuned, T5 from-scratch, and LLM models."""
+"""
+Analyze prediction errors across T5 fine-tuned, T5 from-scratch, and LLM (Gemma 2B).
 
+Classifies every dev-set query (466 total) into exactly ONE of 6 mutually exclusive
+categories per model, using priority-based assignment:
+
+  1. Correct (exact SQL match)
+  2. Correct records (different SQL, same execution result)
+  3. Missing comparison operator (T5 SentencePiece artifact)
+  4. Query truncation / incomplete generation
+  5. Wrong table/column reference
+  6. Semantic error: wrong JOIN structure or wrong predicate values
+
+Usage:
+    python3 script/error_analysis.py
+"""
+
+import pickle
 import re
-import sqlite3
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-DB_PATH = Path("data/flight_database.db")
-GT_SQL = Path("data/dev.sql")
-NL_INPUT = Path("data/dev.nl")
-PRED_FILES = {
-    "t5_ft": Path("results/t5_ft_dev.sql"),
-    "t5_scr": Path("results/t5_scr_dev.sql"),
-    "llm_k0": Path("results/llm_k0_dev.sql"),
-    "llm_k1": Path("results/llm_k1_dev.sql"),
+# ---------------------------------------------------------------------------
+# Paths (relative to project root)
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+GT_SQL_PATH = PROJECT_ROOT / "data" / "dev.sql"
+GT_NL_PATH = PROJECT_ROOT / "data" / "dev.nl"
+GT_PKL_PATH = PROJECT_ROOT / "records" / "ground_truth_dev.pkl"
+
+MODELS = {
+    "T5 Fine-tuned": {
+        "sql": PROJECT_ROOT / "results" / "t5_ft_dev.sql",
+        "pkl": PROJECT_ROOT / "records" / "t5_ft_dev.pkl",
+        "short": "T5-FT",
+    },
+    "T5 From Scratch": {
+        "sql": PROJECT_ROOT / "results" / "t5_scr_dev.sql",
+        "pkl": PROJECT_ROOT / "records" / "t5_scr_dev.pkl",
+        "short": "T5-Scr",
+    },
+    "ICL (Gemma 2B)": {
+        "sql": PROJECT_ROOT / "results" / "llm_dev.sql",
+        "pkl": PROJECT_ROOT / "records" / "llm_dev.pkl",
+        "short": "ICL",
+    },
 }
 
+# Number of dev queries
+TOTAL = 466
 
-def load_lines(path):
-    return [line.strip() for line in open(path)]
+# Category labels
+CAT_CORRECT_SQL = "Correct (exact SQL match)"
+CAT_CORRECT_RECORDS = "Correct (different SQL, same records)"
+CAT_MISSING_OPERATOR = "Missing comparison operator"
+CAT_TRUNCATION = "Query truncation / incomplete"
+CAT_WRONG_REFERENCE = "Wrong table/column reference"
+CAT_SEMANTIC = "Semantic error (wrong JOIN/predicate)"
+CAT_OTHER_EXEC = "Other execution error"
+
+# Priority order for classification (higher priority = checked first)
+CATEGORY_ORDER = [
+    CAT_CORRECT_SQL,
+    CAT_CORRECT_RECORDS,
+    CAT_TRUNCATION,
+    CAT_MISSING_OPERATOR,
+    CAT_WRONG_REFERENCE,
+    CAT_OTHER_EXEC,
+    CAT_SEMANTIC,
+]
 
 
-def try_execute(conn, sql):
-    """Try to execute SQL, return (success, result_or_error)."""
-    try:
-        cursor = conn.execute(sql)
-        rows = cursor.fetchall()
-        return True, rows
-    except Exception as e:
-        return False, str(e)
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+def load_lines(path: Path) -> list[str]:
+    """Load a text file as a list of stripped lines."""
+    with open(path) as f:
+        return [line.strip() for line in f]
 
 
-def classify_exec_error(error_msg):
-    """Classify a SQL execution error."""
+def load_pkl(path: Path) -> tuple[list, list]:
+    """Load a pickle file returning (records_list, errors_list)."""
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Classification helpers
+# ---------------------------------------------------------------------------
+def has_missing_operator(pred_sql: str) -> bool:
+    """Detect T5 SentencePiece artifact: column name followed by 2+ spaces then a number.
+
+    Pattern: `column_name  1800` where `< 1800` should be.
+    Also catches `column_name  = 1800` (double space before equals).
+    """
+    # Match: word.word or word followed by 2+ spaces then a digit
+    return bool(re.search(r"\w+(?:\.\w+)?\s{2,}\d+", pred_sql))
+
+
+def is_truncated(pred_sql: str) -> bool:
+    """Detect truncated / incomplete query generation.
+
+    Indicators:
+    - Very short SQL (< 60 chars) -- likely just SELECT fragment
+    - Missing FROM clause entirely
+    - Only SELECT keyword present with no other SQL keywords
+    """
+    sql_upper = pred_sql.upper().strip()
+
+    # Very short query (just a SELECT fragment)
+    if len(pred_sql.strip()) < 60:
+        return True
+
+    # Has SELECT but no FROM
+    if "SELECT" in sql_upper and "FROM" not in sql_upper:
+        return True
+
+    return False
+
+
+def is_wrong_reference(error_msg: str) -> bool:
+    """Detect wrong table/column reference from error message."""
     e = error_msg.lower()
-    if "no such table" in e:
-        return "no_such_table"
-    if "no such column" in e:
-        return "no_such_column"
-    if "syntax error" in e or "near" in e:
-        return "syntax_error"
-    if "ambiguous" in e:
-        return "ambiguous_column"
-    if "misuse of aggregate" in e:
-        return "aggregate_misuse"
-    return "other_exec_error"
+    return "no such column" in e or "no such table" in e
 
 
-def analyze_structural(pred, gt):
-    """Analyze structural differences between prediction and ground truth."""
-    issues = []
-
-    # Check SQL dialect: JOIN vs comma-separated FROM
-    pred_has_join = bool(re.search(r'\bJOIN\b', pred, re.IGNORECASE))
-    gt_has_join = bool(re.search(r'\bJOIN\b', gt, re.IGNORECASE))
-    if pred_has_join and not gt_has_join:
-        issues.append("wrong_sql_dialect")
-
-    # Check for SELECT * vs specific columns
-    if re.search(r'SELECT\s+\w+\.\*', pred, re.IGNORECASE) and not re.search(r'SELECT\s+\w+\.\*', gt, re.IGNORECASE):
-        issues.append("select_star_instead_of_specific")
-
-    # Check for subquery presence
-    gt_has_subquery = gt.upper().count("SELECT") > 1
-    pred_has_subquery = pred.upper().count("SELECT") > 1
-    if gt_has_subquery and not pred_has_subquery:
-        issues.append("missing_subquery")
-    if not gt_has_subquery and pred_has_subquery:
-        issues.append("spurious_subquery")
-
-    # Check for missing operator (e.g., "arrival_time  900" instead of "arrival_time < 900")
-    if re.search(r'\w+\s{2,}\d+', pred):
-        issues.append("missing_operator")
-
-    # Check for undeclared aliases (aliases used in WHERE but not in FROM)
-    from_match = re.search(r'FROM\s+(.*?)(?:WHERE|$)', pred, re.IGNORECASE)
-    if from_match:
-        from_clause = from_match.group(1)
-        # Extract declared aliases
-        declared = set(re.findall(r'\b(\w+_\d+)\b', from_clause))
-        # Extract aliases used in conditions
-        where_match = re.search(r'WHERE\s+(.*)', pred, re.IGNORECASE)
-        if where_match:
-            where_clause = where_match.group(1)
-            used = set(re.findall(r'\b(\w+_\d+)\b', where_clause))
-            undeclared = used - declared
-            if undeclared:
-                issues.append("undeclared_alias")
-
-    # Check for city names vs airport codes
-    # Ground truth uses city_name = 'DENVER', LLM might use airport codes like 'DENV'
-    gt_cities = set(re.findall(r"city_name\s*=\s*'([^']+)'", gt, re.IGNORECASE))
-    pred_cities = set(re.findall(r"city_name\s*=\s*'([^']+)'", pred, re.IGNORECASE))
-    if gt_cities and not pred_cities:
-        # Pred doesn't use city_name at all — might use airport codes directly
-        if re.search(r"(?:from_airport|to_airport|airport)\s*=\s*'[A-Z]{3,4}'", pred, re.IGNORECASE):
-            issues.append("airport_code_instead_of_city_name")
-
-    # Check for wrong city name
-    if gt_cities and pred_cities and gt_cities != pred_cities:
-        issues.append("wrong_city_name")
-
-    # Check for missing FROM tables
-    gt_tables = set(re.findall(r'\b(flight|fare|airport_service|city|airport|days|date_day|flight_stop|flight_fare|airline|food_service|ground_service|restriction|equipment_sequence|flight_leg)\b', gt.split('WHERE')[0] if 'WHERE' in gt else gt, re.IGNORECASE))
-    pred_tables = set(re.findall(r'\b(flight|fare|airport_service|city|airport|days|date_day|flight_stop|flight_fare|airline|food_service|ground_service|restriction|equipment_sequence|flight_leg)\b', pred.split('WHERE')[0] if 'WHERE' in pred else pred, re.IGNORECASE))
-    gt_tables_lower = {t.lower() for t in gt_tables}
-    pred_tables_lower = {t.lower() for t in pred_tables}
-    missing_tables = gt_tables_lower - pred_tables_lower
-    extra_tables = pred_tables_lower - gt_tables_lower
-    if missing_tables:
-        issues.append("missing_tables")
-    if extra_tables:
-        issues.append("extra_tables")
-
-    # Check for completely wrong query structure (different SELECT target)
-    gt_select = re.search(r'SELECT\s+(.*?)\s+FROM', gt, re.IGNORECASE)
-    pred_select = re.search(r'SELECT\s+(.*?)\s+FROM', pred, re.IGNORECASE)
-    if gt_select and pred_select:
-        gt_sel = gt_select.group(1).strip().lower()
-        pred_sel = pred_select.group(1).strip().lower()
-        if gt_sel != pred_sel:
-            issues.append("wrong_select_target")
-
-    # Check for non-existent columns referenced in pred
-    nonexistent_cols = re.findall(r'\b(?:departure_date|day_name|meal_code|connections|arrival_airport|airline_flight)\b', pred, re.IGNORECASE)
-    if nonexistent_cols:
-        issues.append("hallucinated_columns")
-
-    # Check for wrong date formats or modern SQL features
-    if re.search(r"DATE_ADD|NOW\(\)|INTERVAL|LIMIT\s+\d+|ORDER\s+BY.*ASC|ORDER\s+BY.*DESC", pred, re.IGNORECASE):
-        issues.append("modern_sql_features")
-
-    # Check query length ratio (truncation indicator)
-    if len(pred) < len(gt) * 0.5 and len(gt) > 200:
-        issues.append("possible_truncation")
-
-    return issues
+def extract_from_tables(sql: str) -> set[str]:
+    """Extract table names from the FROM clause of a SQL query."""
+    # Get text between FROM and WHERE (or end of string)
+    from_match = re.search(r"\bFROM\s+(.*?)(?:\bWHERE\b|$)", sql, re.IGNORECASE | re.DOTALL)
+    if not from_match:
+        return set()
+    from_clause = from_match.group(1)
+    # Extract table names (words before aliases)
+    tables = set()
+    # Match patterns like: table_name alias_name or table_name AS alias_name
+    for match in re.finditer(r"\b([a-z_]+)\s+(?:AS\s+)?([a-z_]+_\d+|\b[a-z_]+\b)", from_clause, re.IGNORECASE):
+        tables.add(match.group(1).lower())
+    return tables
 
 
+# ---------------------------------------------------------------------------
+# Main classification function
+# ---------------------------------------------------------------------------
+def classify_query(
+    idx: int,
+    gt_sql: str,
+    pred_sql: str,
+    gt_records: list,
+    pred_records: list,
+    error_msg: str,
+) -> str:
+    """Classify a single prediction into exactly one category.
+
+    Priority order:
+    1. Correct SQL match
+    2. Correct records (different SQL, same result)
+    3. Truncation (checked before missing operator -- LLM truncation dominates)
+    4. Missing comparison operator (T5 SentencePiece artifact)
+    5. Wrong table/column reference (execution error)
+    6. Other execution error
+    7. Semantic error (executes but wrong results)
+    """
+    # 1. Exact SQL match
+    if pred_sql.strip() == gt_sql.strip():
+        return CAT_CORRECT_SQL
+
+    # 2. Check if records match (for queries that executed successfully)
+    if not error_msg:
+        gt_set = set(map(tuple, gt_records)) if gt_records else set()
+        pred_set = set(map(tuple, pred_records)) if pred_records else set()
+        if gt_set == pred_set:
+            return CAT_CORRECT_RECORDS
+
+    # 3. Truncation (must check before wrong reference -- LLM truncation causes
+    #    "no such column" errors that should be classified as truncation)
+    if is_truncated(pred_sql):
+        return CAT_TRUNCATION
+
+    # 4. Missing comparison operator (T5 SentencePiece artifact)
+    if has_missing_operator(pred_sql):
+        return CAT_MISSING_OPERATOR
+
+    # 5. Wrong table/column reference (execution error, not from truncation)
+    if error_msg and is_wrong_reference(error_msg):
+        return CAT_WRONG_REFERENCE
+
+    # 6. Other execution error (syntax, ambiguous, aggregate misuse, etc.)
+    if error_msg:
+        return CAT_OTHER_EXEC
+
+    # 7. Semantic error -- query executes but returns wrong records
+    return CAT_SEMANTIC
+
+
+# ---------------------------------------------------------------------------
+# Example selection
+# ---------------------------------------------------------------------------
+def select_best_example(examples: list[dict], category: str) -> dict | None:
+    """Select the most illustrative example for a category.
+
+    Prefers shorter NL inputs that clearly show the error pattern.
+    """
+    if not examples:
+        return None
+
+    # Sort by NL length (shorter = clearer illustration)
+    sorted_ex = sorted(examples, key=lambda x: len(x["nl"]))
+
+    # For missing operator, prefer examples that clearly show the double-space
+    if category == CAT_MISSING_OPERATOR:
+        for ex in sorted_ex:
+            if re.search(r"time\s{2,}\d+", ex["pred_sql"]):
+                return ex
+
+    # For truncation, prefer examples with very short pred
+    if category == CAT_TRUNCATION:
+        sorted_ex = sorted(examples, key=lambda x: len(x["pred_sql"]))
+
+    return sorted_ex[0]
+
+
+# ---------------------------------------------------------------------------
+# Main analysis
+# ---------------------------------------------------------------------------
 def main():
-    gt_sqls = load_lines(GT_SQL)
-    nl_inputs = load_lines(NL_INPUT)
+    # Load ground truth
+    gt_sqls = load_lines(GT_SQL_PATH)
+    nl_inputs = load_lines(GT_NL_PATH)
+    gt_records_list, gt_errors_list = load_pkl(GT_PKL_PATH)
 
-    conn = sqlite3.connect(str(DB_PATH))
+    assert len(gt_sqls) == TOTAL, f"Expected {TOTAL} GT SQL queries, got {len(gt_sqls)}"
+    assert len(nl_inputs) == TOTAL, f"Expected {TOTAL} NL inputs, got {len(nl_inputs)}"
 
-    # First, check ground truth execution
-    gt_exec_ok = 0
-    for sql in gt_sqls:
-        ok, _ = try_execute(conn, sql)
-        if ok:
-            gt_exec_ok += 1
-    print(f"Ground truth: {gt_exec_ok}/{len(gt_sqls)} execute successfully\n")
+    print(f"Dev set size: {TOTAL} queries")
+    print(f"{'=' * 80}\n")
 
-    for model_name, pred_path in PRED_FILES.items():
-        if not pred_path.exists():
-            print(f"--- {model_name}: file not found ---\n")
-            continue
+    # Store all results for cross-model summary
+    all_results = {}
 
-        pred_sqls = load_lines(pred_path)
-        assert len(pred_sqls) == len(gt_sqls), f"{model_name}: {len(pred_sqls)} preds vs {len(gt_sqls)} gt"
+    for model_name, model_info in MODELS.items():
+        short = model_info["short"]
 
-        print(f"{'='*80}")
-        print(f"MODEL: {model_name}")
-        print(f"{'='*80}")
+        # Load predictions
+        pred_sqls = load_lines(model_info["sql"])
+        pred_records_list, pred_errors_list = load_pkl(model_info["pkl"])
 
-        # Exact match
-        exact_matches = sum(1 for p, g in zip(pred_sqls, gt_sqls) if p.strip() == g.strip())
-        print(f"Exact match: {exact_matches}/{len(gt_sqls)} ({100*exact_matches/len(gt_sqls):.1f}%)")
+        assert len(pred_sqls) == TOTAL, f"{model_name}: Expected {TOTAL} predictions, got {len(pred_sqls)}"
 
-        # Execution success
-        exec_ok = 0
-        exec_errors = Counter()
-        exec_error_examples = defaultdict(list)
-        for i, (pred, gt, nl) in enumerate(zip(pred_sqls, gt_sqls, nl_inputs)):
-            ok, result = try_execute(conn, pred)
-            if ok:
-                exec_ok += 1
-            else:
-                err_type = classify_exec_error(result)
-                exec_errors[err_type] += 1
-                if len(exec_error_examples[err_type]) < 3:
-                    exec_error_examples[err_type].append((i, nl, pred[:200], result[:150]))
+        # Classify each query
+        categories = []
+        examples_by_cat: dict[str, list[dict]] = defaultdict(list)
 
-        print(f"Execution success: {exec_ok}/{len(gt_sqls)} ({100*exec_ok/len(gt_sqls):.1f}%)")
-        print(f"Execution errors: {len(gt_sqls) - exec_ok}/{len(gt_sqls)} ({100*(len(gt_sqls)-exec_ok)/len(gt_sqls):.1f}%)")
-        if exec_errors:
-            print("\n  Execution error breakdown:")
-            for err, count in exec_errors.most_common():
-                print(f"    {err}: {count}")
-                for idx, nl, pred_snip, err_msg in exec_error_examples[err][:2]:
-                    print(f"      Example (line {idx+1}): NL: {nl[:80]}")
-                    print(f"        Pred: {pred_snip}...")
-                    print(f"        Error: {err_msg}")
+        for i in range(TOTAL):
+            # Handle records: gt_records may be empty list if GT query also errors
+            gt_recs = gt_records_list[i] if gt_records_list[i] else []
+            pred_recs = pred_records_list[i] if pred_records_list[i] else []
+            error = pred_errors_list[i] if pred_errors_list[i] else ""
 
-        # Structural analysis (for all predictions, not just exec errors)
-        all_issues = Counter()
-        issue_examples = defaultdict(list)
-        for i, (pred, gt, nl) in enumerate(zip(pred_sqls, gt_sqls, nl_inputs)):
-            issues = analyze_structural(pred, gt)
-            for issue in issues:
-                all_issues[issue] += 1
-                if len(issue_examples[issue]) < 3:
-                    issue_examples[issue].append((i, nl, pred[:300], gt[:300]))
+            cat = classify_query(i, gt_sqls[i], pred_sqls[i], gt_recs, pred_recs, error)
+            categories.append(cat)
 
-        print(f"\n  Structural issues:")
-        for issue, count in all_issues.most_common():
-            print(f"    {issue}: {count}/{len(gt_sqls)} ({100*count/len(gt_sqls):.1f}%)")
-            for idx, nl, pred_snip, gt_snip in issue_examples[issue][:1]:
-                print(f"      Example (line {idx+1}): NL: {nl[:80]}")
-                print(f"        Pred: {pred_snip[:150]}...")
-                print(f"        GT:   {gt_snip[:150]}...")
+            # Collect examples (limit to 5 per category to save memory)
+            if len(examples_by_cat[cat]) < 5:
+                examples_by_cat[cat].append({
+                    "idx": i,
+                    "nl": nl_inputs[i],
+                    "gt_sql": gt_sqls[i],
+                    "pred_sql": pred_sqls[i],
+                    "error": error,
+                })
 
-        # Record-level comparison (execute both and compare results)
-        record_match = 0
-        record_mismatch = 0
-        record_both_fail = 0
-        record_pred_fail = 0
-        empty_result_when_gt_nonempty = 0
-        extra_results = 0
-        missing_results = 0
+        # Count
+        counts = Counter(categories)
+        total_classified = sum(counts.values())
 
-        for pred, gt in zip(pred_sqls, gt_sqls):
-            gt_ok, gt_res = try_execute(conn, gt)
-            pred_ok, pred_res = try_execute(conn, pred)
+        print(f"{'=' * 80}")
+        print(f"=== {model_name} ({short}) ===")
+        print(f"{'=' * 80}")
 
-            if not gt_ok and not pred_ok:
-                record_both_fail += 1
-            elif not pred_ok:
-                record_pred_fail += 1
-            elif not gt_ok:
-                pass  # GT fails, can't compare
-            else:
-                gt_set = set(gt_res)
-                pred_set = set(pred_res)
-                if gt_set == pred_set:
-                    record_match += 1
-                else:
-                    record_mismatch += 1
-                    if len(pred_set) == 0 and len(gt_set) > 0:
-                        empty_result_when_gt_nonempty += 1
-                    if len(pred_set) > len(gt_set):
-                        extra_results += 1
-                    if len(pred_set) < len(gt_set) and len(pred_set) > 0:
-                        missing_results += 1
+        for cat in CATEGORY_ORDER:
+            c = counts.get(cat, 0)
+            pct = 100 * c / TOTAL
+            print(f"  {cat}: {c}/{TOTAL} ({pct:.1f}%)")
 
-        print(f"\n  Record comparison:")
-        print(f"    Exact record match: {record_match}/{len(gt_sqls)}")
-        print(f"    Record mismatch: {record_mismatch}/{len(gt_sqls)}")
-        print(f"    Pred execution failed: {record_pred_fail}/{len(gt_sqls)}")
-        print(f"    Both failed: {record_both_fail}/{len(gt_sqls)}")
-        print(f"    Empty result (GT non-empty): {empty_result_when_gt_nonempty}")
-        print(f"    Extra results: {extra_results}")
-        print(f"    Missing results: {missing_results}")
+        # Verify total
+        print(f"\n  Total classified: {total_classified}/{TOTAL}", end="")
+        if total_classified == TOTAL:
+            print(" [OK]")
+        else:
+            print(" [MISMATCH!]")
+
+        # Print best examples per category
+        print(f"\n  --- Concrete Examples ---")
+        for cat in CATEGORY_ORDER:
+            if cat in (CAT_CORRECT_SQL, CAT_CORRECT_RECORDS):
+                continue  # Skip correct categories for examples
+            ex = select_best_example(examples_by_cat.get(cat, []), cat)
+            if ex:
+                print(f"\n  [{cat}]")
+                print(f"    NL: {ex['nl'][:100]}")
+                print(f"    GT: {ex['gt_sql'][:120]}...")
+                print(f"    Pred: {ex['pred_sql'][:120]}...")
+                if ex["error"]:
+                    print(f"    Error: {ex['error'][:100]}")
 
         print()
+        all_results[model_name] = {"counts": counts, "short": short, "examples": examples_by_cat}
 
-    conn.close()
+    # ---------------------------------------------------------------------------
+    # Cross-model summary table
+    # ---------------------------------------------------------------------------
+    print(f"{'=' * 80}")
+    print("CROSS-MODEL SUMMARY")
+    print(f"{'=' * 80}")
+
+    # Header
+    model_shorts = [m["short"] for m in MODELS.values()]
+    header = f"{'Category':<45s}" + "".join(f"{s:>12s}" for s in model_shorts)
+    print(header)
+    print("-" * len(header))
+
+    for cat in CATEGORY_ORDER:
+        row = f"{cat:<45s}"
+        for model_name in MODELS:
+            c = all_results[model_name]["counts"].get(cat, 0)
+            row += f"{c:>5d}/{TOTAL:<5d}"
+        print(row)
+
+    # Print totals row
+    print("-" * len(header))
+    row = f"{'TOTAL':<45s}"
+    for model_name in MODELS:
+        t = sum(all_results[model_name]["counts"].values())
+        row += f"{t:>5d}/{TOTAL:<5d}"
+    print(row)
+
+    # ---------------------------------------------------------------------------
+    # Report-ready statistics (for LaTeX table)
+    # ---------------------------------------------------------------------------
+    print(f"\n{'=' * 80}")
+    print("REPORT-READY STATISTICS (for LaTeX tab:qualitative)")
+    print(f"{'=' * 80}")
+
+    report_cats = [
+        (CAT_MISSING_OPERATOR, "Missing comparison operator"),
+        (CAT_TRUNCATION, "Query truncation / incomplete generation"),
+        (CAT_WRONG_REFERENCE, "Wrong table/column reference"),
+        (CAT_SEMANTIC, "Wrong JOIN structure / wrong predicate values"),
+        (CAT_OTHER_EXEC, "Other execution error"),
+    ]
+
+    for cat, label in report_cats:
+        print(f"\n  {label}:")
+        for model_name, result in all_results.items():
+            c = result["counts"].get(cat, 0)
+            short = result["short"]
+            if c > 0:
+                print(f"    {short}: {c}/{TOTAL} ({100*c/TOTAL:.1f}%)")
+
+    # ---------------------------------------------------------------------------
+    # Best examples for report (one per category, cross-model)
+    # ---------------------------------------------------------------------------
+    print(f"\n{'=' * 80}")
+    print("BEST EXAMPLES FOR REPORT")
+    print(f"{'=' * 80}")
+
+    for cat, label in report_cats:
+        print(f"\n--- {label} ---")
+        # Find model with most examples in this category
+        best_model = None
+        best_count = 0
+        for model_name, result in all_results.items():
+            c = result["counts"].get(cat, 0)
+            if c > best_count:
+                best_count = c
+                best_model = model_name
+        if best_model and best_count > 0:
+            ex = select_best_example(all_results[best_model]["examples"].get(cat, []), cat)
+            if ex:
+                print(f"  Model: {best_model}")
+                print(f"  NL: {ex['nl']}")
+                print(f"  GT SQL: {ex['gt_sql'][:200]}")
+                print(f"  Pred SQL: {ex['pred_sql'][:200]}")
+                if ex["error"]:
+                    print(f"  Error: {ex['error'][:150]}")
 
 
 if __name__ == "__main__":
