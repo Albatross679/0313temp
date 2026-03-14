@@ -1,4 +1,4 @@
-"""Part 1: RL fine-tune configs (GRPO / CISPO). Inherits T5FineTuneConfig."""
+"""Part 1: RL fine-tune configs (GRPO / CISPO / PPO). Inherits T5FineTuneConfig."""
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -7,19 +7,20 @@ from part1.config import T5FineTuneConfig
 
 
 # ======================================================================
-#  Base GRPO config (shared by GRPO and CISPO variants)
+#  Base GRPO config (shared by GRPO, CISPO, and PPO variants)
 # ======================================================================
 
 @dataclass
 class T5GRPOConfig(T5FineTuneConfig):
-    """GRPO/CISPO RL fine-tuning on T5 with execution-based reward.
+    """GRPO/CISPO/PPO RL fine-tuning on T5 with execution-based reward.
 
     Builds on the best supervised fine-tune checkpoint. Uses group-relative
-    advantage estimation (no critic network) and online generation.
+    advantage estimation (no critic network for GRPO/CISPO) and online generation.
 
     RL algorithm selection:
       - "grpo": PPO-style clipped surrogate (DeepSeekMath formulation)
       - "cispo": Clipped IS weights with detached ratio (MiniMax-M1 formulation)
+      - "ppo": PPO with learned value head baseline
     """
 
     # ---- Overrides from T5FineTuneConfig with RL-appropriate defaults ----
@@ -36,7 +37,7 @@ class T5GRPOConfig(T5FineTuneConfig):
     eval_subset_size: int = 0                        # full dev set every epoch
     num_beams: int = 4
     grad_clip_norm: float = 1.0
-    max_wall_clock_hours: Optional[float] = 1.0      # 1hr per config within 1-2hr total budget
+    max_wall_clock_hours: Optional[float] = None     # no per-config cap; --max_hours at sweep level
 
     # ---- LoRA (wider adapter per user decision) ----
     use_lora: bool = True
@@ -50,10 +51,14 @@ class T5GRPOConfig(T5FineTuneConfig):
     )
 
     # ---- RL algorithm selection ----
-    rl_algorithm: str = "grpo"                       # "grpo" or "cispo"
+    rl_algorithm: str = "grpo"                       # "grpo", "cispo", or "ppo"
     group_size: int = 8                              # G completions per query
     sampling_temperature: float = 1.0                # temperature for group generation
     sampling_top_k: int = 50                         # top-k for group generation
+
+    # ---- Generation ----
+    top_p: Optional[float] = None                    # nucleus sampling (None = disabled)
+    max_completion_length: int = 256                 # max tokens per completion
 
     # ---- Loss hyperparameters ----
     epsilon: float = 0.2                             # symmetric clipping (GRPO)
@@ -64,10 +69,46 @@ class T5GRPOConfig(T5FineTuneConfig):
     # ---- Reward ----
     reward_type: str = "graded"                      # "graded" per user decision (+1, +0.5, -0.5, -1)
     skip_dead_groups: bool = True                    # DAPO-style: skip groups with all-same reward
+    reward_scale: float = 1.0                        # multiplicative reward scaling
+    reward_clip: Optional[float] = None              # clamp rewards to [-clip, clip]
+
+    # ---- Reference model ----
+    reference_model_update: str = "none"             # "none" (frozen), "periodic", "ema"
+    reference_update_interval: int = 100             # steps between reference syncs
+    ema_decay: float = 0.999                         # EMA decay for reference model
+
+    # ---- CISPO-specific ----
+    normalize_by_total_tokens: bool = True           # normalize loss by total tokens (not per-sample)
 
     # ---- Stability ----
     max_grad_norm_spike_factor: float = 10.0         # skip update if grad_norm > factor * ema
     grad_norm_ema_decay: float = 0.99                # EMA decay for gradient norm tracking
+
+
+# ======================================================================
+#  PPO config (learned value head baseline)
+# ======================================================================
+
+@dataclass
+class T5PPOConfig(T5GRPOConfig):
+    """PPO variant with learned value head baseline.
+
+    Uses a learned value function V(s) instead of GRPO's group-mean baseline.
+    The value head is a small MLP on mean-pooled encoder hidden states.
+    Supports both pure learned advantage (A = R - V) and hybrid
+    (group-relative normalization on top of learned baseline).
+    """
+    rl_algorithm: str = "ppo"
+
+    # PPO-specific
+    value_coef: float = 0.5                          # value loss coefficient in total loss
+    entropy_coef: float = 0.01                       # entropy bonus coefficient
+    value_clip_range: float = 0.2                    # value function clipping range (0 = disabled)
+    advantage_type: str = "learned"                  # "learned" (V head), "group" (GRPO-style), "hybrid"
+    value_hidden_dim: int = 512                      # value head MLP hidden dimension
+    value_lr: float = 1e-4                           # separate LR for value head
+    target_kl: Optional[float] = None                # KL threshold for early stopping within epoch
+    num_updates_per_rollout: int = 1                 # gradient steps per batch of rollouts
 
 
 # ======================================================================
@@ -89,3 +130,13 @@ class T5GRPOConfig_cispo(T5GRPOConfig):
     rl_algorithm: str = "cispo"
     kl_beta: float = 0.0
     epsilon_high: float = 0.3
+
+
+@dataclass
+class T5PPOConfig_v1(T5PPOConfig):
+    """PPO v1: learned baseline, moderate KL penalty."""
+    name: str = "t5_ft_ppo_v1"
+    rl_algorithm: str = "ppo"
+    kl_beta: float = 0.02
+    value_coef: float = 0.5
+    entropy_coef: float = 0.01
