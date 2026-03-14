@@ -10,8 +10,10 @@ Implements a hybrid approach:
 Produces (nl_text, chosen_sql, rejected_sql) triplets serialized to JSON.
 """
 
+import hashlib
 import json
 import os
+import pickle
 import random
 import re
 import sqlite3
@@ -23,6 +25,7 @@ from tqdm import tqdm
 from part1.data import PAD_IDX, _BOS_ID, _TOKENIZER, _load_schema_string
 
 DB_PATH = "data/flight_database.db"
+GOLD_CACHE_PATH = "records/gold_train_records.pkl"
 
 # ── City names (extracted lazily from training data) ─────────────────────
 
@@ -44,53 +47,149 @@ def _get_city_names(sql_path: str = "data/train.sql") -> List[str]:
     return _CITY_NAMES_CACHE
 
 
+# ── In-memory SQLite ───────────────────────────────────────────────────
+# flight_database.db is only 15 MB — loading it into RAM eliminates all
+# filesystem I/O and connection setup overhead for the 42K+ SQL evals.
+
+_MEM_CONN: Optional[sqlite3.Connection] = None
+
+
+def _get_mem_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
+    """Get (or create) an in-memory copy of the flight database.
+
+    Uses sqlite3.backup() to copy the entire on-disk database into a
+    :memory: connection once.  Subsequent calls return the same connection.
+    Thread-safe for read-only queries (all DPO SQL is SELECT-only).
+    """
+    global _MEM_CONN
+    if _MEM_CONN is not None:
+        return _MEM_CONN
+    disk_conn = sqlite3.connect(db_path)
+    mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
+    disk_conn.backup(mem_conn)
+    disk_conn.close()
+    mem_conn.execute("PRAGMA cache_size = -50000")  # 50 MB cache
+    _MEM_CONN = mem_conn
+    return _MEM_CONN
+
+
 # ── SQL execution helper ────────────────────────────────────────────────
 
 
-def _execute_sql(sql: str, db_path: str = DB_PATH, timeout: float = 10.0) -> Optional[frozenset]:
-    """Execute SQL and return records as frozenset, or None on error/timeout."""
+def _execute_sql(sql: str, db_path: str = DB_PATH, timeout: float = 10.0,
+                 conn: Optional[sqlite3.Connection] = None) -> Optional[frozenset]:
+    """Execute SQL and return records as frozenset, or None on error.
+
+    If `conn` is provided, reuses that connection (for in-memory DB).
+    A progress handler aborts queries exceeding `timeout` seconds.
+    Otherwise falls back to opening a new disk connection with busy_timeout.
+    """
+    own_conn = False
     try:
-        conn = sqlite3.connect(db_path, timeout=timeout)
-        conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
+        if conn is None:
+            conn = sqlite3.connect(db_path, timeout=timeout)
+            conn.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
+            own_conn = True
+        else:
+            # In-memory connections need a progress handler for timeouts
+            # since there's no file lock to time out on.
+            import time as _time
+            _deadline = _time.monotonic() + timeout
+
+            def _check_timeout():
+                return 1 if _time.monotonic() > _deadline else 0
+
+            # Check every 10000 SQLite VM instructions (~1-5ms intervals)
+            conn.set_progress_handler(_check_timeout, 10000)
+
         cursor = conn.cursor()
         cursor.execute(sql)
         records = frozenset(cursor.fetchall())
-        conn.close()
+
+        if not own_conn:
+            conn.set_progress_handler(None, 0)  # clear handler
+        if own_conn:
+            conn.close()
         return records
     except Exception:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if not own_conn and conn is not None:
+            conn.set_progress_handler(None, 0)  # clear handler on error too
+        if own_conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
         return None
 
 
-def _execute_sql_batch(
-    sql_list: List[str], db_path: str = DB_PATH, num_threads: int = 16, timeout: float = 10.0,
+def _execute_sql_sequential(
+    sql_list: List[str], conn: sqlite3.Connection, timeout: float = 10.0,
 ) -> List[Optional[frozenset]]:
-    """Execute a list of SQL queries in parallel using ThreadPoolExecutor."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutTimeoutError
+    """Execute SQL queries sequentially on a single connection.
 
-    results: dict = {}
-    with ThreadPoolExecutor(max_workers=num_threads) as pool:
-        futures = {
-            pool.submit(_execute_sql, sql, db_path, timeout): i
-            for i, sql in enumerate(sql_list)
-        }
+    No ThreadPoolExecutor overhead, no file-level lock contention.
+    Used with an in-memory connection for maximum throughput.
+    """
+    results = []
+    for sql in sql_list:
+        results.append(_execute_sql(sql, conn=conn, timeout=timeout))
+    return results
+
+
+# ── Gold records caching ──────────────────────────────────────────────
+# Gold SQL records are deterministic (static DB + static train.sql).
+# Computing them takes ~30 min with disk SQLite.  Cache to pickle so
+# subsequent runs load in <1 second.
+
+
+def _sql_list_hash(sql_list: List[str]) -> str:
+    """Content hash of the SQL list for cache invalidation."""
+    h = hashlib.sha256()
+    for s in sql_list:
+        h.update(s.encode())
+    return h.hexdigest()[:16]
+
+
+def _load_or_compute_gold_records(
+    sql_lines: List[str], db_path: str = DB_PATH,
+) -> List[Optional[frozenset]]:
+    """Load cached gold records or compute and cache them.
+
+    Cache key is a content hash of all SQL queries, so the cache
+    auto-invalidates if train.sql changes.
+    """
+    current_hash = _sql_list_hash(sql_lines)
+
+    # Try loading from cache
+    if os.path.exists(GOLD_CACHE_PATH):
         try:
-            for future in as_completed(futures, timeout=timeout * len(sql_list)):
-                idx = futures[future]
-                try:
-                    results[idx] = future.result(timeout=timeout)
-                except Exception:
-                    results[idx] = None
-        except FutTimeoutError:
-            # Some futures didn't complete -- cancel them
-            for f in futures:
-                if not f.done():
-                    f.cancel()
+            with open(GOLD_CACHE_PATH, "rb") as f:
+                cached = pickle.load(f)
+            if (isinstance(cached, dict)
+                    and cached.get("hash") == current_hash
+                    and len(cached["records"]) == len(sql_lines)):
+                print(f"Loaded cached gold records from {GOLD_CACHE_PATH} "
+                      f"({len(cached['records'])} queries)")
+                return cached["records"]
+            else:
+                print("Cache hash mismatch — recomputing gold records")
+        except Exception as e:
+            print(f"Cache load failed ({e}) — recomputing")
 
-    return [results.get(i, None) for i in range(len(sql_list))]
+    # Compute using in-memory SQLite (fast sequential).
+    # 5s timeout per query — most valid queries finish in <100ms; anything
+    # longer is a pathologically complex nested query that yields None.
+    print("Computing gold SQL records (in-memory SQLite)...")
+    mem_conn = _get_mem_conn(db_path)
+    records = _execute_sql_sequential(sql_lines, mem_conn, timeout=5.0)
+
+    # Save cache
+    os.makedirs(os.path.dirname(GOLD_CACHE_PATH) or ".", exist_ok=True)
+    with open(GOLD_CACHE_PATH, "wb") as f:
+        pickle.dump({"hash": current_hash, "records": records}, f)
+    print(f"Cached gold records to {GOLD_CACHE_PATH}")
+
+    return records
 
 
 # ── Perturbation functions ──────────────────────────────────────────────
@@ -249,6 +348,7 @@ def _generate_perturbation_pairs(
     max_pairs: int,
     db_path: str,
     rng: random.Random,
+    mem_conn: Optional[sqlite3.Connection] = None,
 ) -> List[Tuple[str, str]]:
     """Generate (chosen=gold, rejected=perturbed) pairs for one example.
 
@@ -270,7 +370,7 @@ def _generate_perturbation_pairs(
             continue
         if perturbed is None or perturbed == gold_sql:
             continue
-        perturbed_records = _execute_sql(perturbed, db_path)
+        perturbed_records = _execute_sql(perturbed, db_path, conn=mem_conn)
         if perturbed_records is None:
             continue  # SQL error
         if perturbed_records == gold_records:
@@ -391,9 +491,11 @@ def generate_preference_data(
 
     schema_str = _load_schema_string(mode="tables")
 
-    # Pre-compute gold records (parallel for speed)
-    print("Pre-computing gold SQL records (parallel)...")
-    gold_records_list = _execute_sql_batch(sql_lines, db_path, num_threads=16, timeout=10.0)
+    # Load in-memory SQLite for fast SQL execution
+    mem_conn = _get_mem_conn(db_path)
+
+    # Pre-compute gold records (cached to disk across runs)
+    gold_records_list = _load_or_compute_gold_records(sql_lines, db_path)
     valid_gold = sum(1 for r in gold_records_list if r is not None)
     print(f"Gold SQL: {valid_gold}/{len(gold_records_list)} executed successfully")
 
@@ -434,14 +536,14 @@ def generate_preference_data(
                 skipped_count += 1
                 continue  # Gold SQL failed -- skip
 
-            # Execute each candidate
+            # Execute each candidate against in-memory DB
             correct_candidates = []
             wrong_candidates = []
             for cand in candidates:
                 cand = cand.strip()
                 if not cand:
                     continue
-                cand_records = _execute_sql(cand, db_path)
+                cand_records = _execute_sql(cand, db_path, conn=mem_conn)
                 if cand_records is None:
                     continue  # SQL error -- skip this candidate
                 if cand_records == gold_records:
@@ -484,7 +586,8 @@ def generate_preference_data(
             continue
 
         pairs = _generate_perturbation_pairs(
-            gold_sql, gold_records, max_pairs_per_example, db_path, rng
+            gold_sql, gold_records, max_pairs_per_example, db_path, rng,
+            mem_conn=mem_conn,
         )
         for chosen, rejected in pairs:
             triplets.append((nl_text, chosen, rejected))

@@ -37,15 +37,21 @@ Base                                    (core fields + all infrastructure)
 │   │   └── CatBoost Regression         (ordered boosting, bagging_temperature)
 │   └── SL Tree Classification          (extend as needed)
 ├── Reinforcement Learning (RL)         (timestep-based training)
-│   ├── PPO                             (proximal policy optimization)
-│   └── (SAC, DQN, etc.)                (extend as needed)
+│   ├── Classic Control                 (environment-based, continuous/discrete action spaces)
+│   │   ├── PPO                         (proximal policy optimization, on-policy)
+│   │   ├── SAC                         (soft actor-critic, off-policy, continuous actions)
+│   │   └── DQN                         (deep Q-network, off-policy, discrete actions)
+│   └── LLM Alignment                  (generation-based, preference/reward optimization)
+│       ├── DPO                         (direct preference optimization, offline)
+│       ├── GRPO                        (group relative policy optimization, online)
+│       └── CISPO                       (clipped IS policy optimization, online)
 └── (your task inherits from any of these)
 ```
 
 **Field references** (read on demand):
 - [sl_neural_fields.md](sl_neural_fields.md) — SL Neural + Regression + Classification fields, metrics contracts, task configs
 - [sl_tree_fields.md](sl_tree_fields.md) — SL Tree + Regression fields, metrics contract, framework param mapping, task configs
-- [rl_fields.md](rl_fields.md) — RL + PPO fields
+- [rl_fields.md](rl_fields.md) — RL: Classic Control (PPO, SAC, DQN) + LLM Alignment (DPO, GRPO, CISPO), metrics, reward design, stability
 
 ---
 

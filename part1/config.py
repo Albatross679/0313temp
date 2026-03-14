@@ -372,14 +372,14 @@ class T5DPOConfig(T5FineTuneConfig):
     # DPO-specific
     dpo_beta: float = 0.1
     learning_rate: float = 5e-6
-    num_epochs: int = 5
+    num_epochs: int = 9999          # early stopping is the binding constraint
     batch_size: int = 8
-    patience_epochs: int = 3
-    eval_every_n_epochs: int = 1
-    eval_subset_size: int = 0  # full dev set every epoch (DPO is short)
+    patience_epochs: int = 5        # 5 eval cycles without improvement
+    eval_every_n_epochs: int = 1    # eval every epoch (DPO converges fast)
+    eval_subset_size: int = 0       # full dev set every epoch
     num_beams: int = 4
     grad_clip_norm: float = 1.0
-    max_wall_clock_hours: float = 2.0
+    max_wall_clock_hours: Optional[float] = None  # no per-run time cap
 
     # Preference data
     preference_data_path: str = "output/dpo_preference_data.json"

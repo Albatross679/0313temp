@@ -91,9 +91,7 @@ def cleanup_vram():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
-        # Nuclear option: reset CUDA memory allocator state
         torch.cuda.reset_accumulated_memory_stats()
 
 
@@ -494,7 +492,18 @@ def train(cfg, model, train_loader, dev_loader, optimizer, scheduler, run_dir,
         else:
             print("Training state saving disabled (checkpointing.save_training_state=False). Resume not available.")
     finally:
-        _sql_pool.shutdown(wait=False)
+        # Drain any remaining async SQL futures before cleanup to avoid
+        # deadlock between background threads and gc.collect()/CUDA cleanup.
+        for p in _pending_list:
+            try:
+                best_val, best_metrics, epochs_since_improvement, _ = _collect_async_sql(
+                    p, cfg, ckpt_dir, model, best_val, best_metrics,
+                    epochs_since_improvement, optimizer,
+                )
+            except Exception:
+                pass
+        _pending_list.clear()
+        _sql_pool.shutdown(wait=True)
 
     if epoch_times:
         log_extra_params({"avg_epoch_seconds": round(sum(epoch_times) / len(epoch_times), 2)})

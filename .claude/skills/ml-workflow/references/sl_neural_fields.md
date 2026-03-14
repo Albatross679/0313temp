@@ -2,6 +2,14 @@
 
 Field specifications for SL Neural (Level 1a), SL Neural Regression (Level 2a), SL Neural Classification (Level 2b), and task-specific configs (Level 3). All inherit Base fields and built-in infrastructure (output, console, checkpointing, metricslog, experiment tracking).
 
+## Table of Contents
+
+- **SL Neural Base**
+  - [Training fields](#training-fields) | [Optimizer](#optimizer-and-scheduler) | [Data loading](#data-loading) | [Regularization](#regularization) | [Mixed precision](#mixed-precision) | [Early stopping](#early-stopping) | [Metric logging](#metric-logging-flags)
+- **SL Neural Regression** — [Fields](#level-2a-sl-neural-regression) | [LSTM](#lstm-regression) | [Transformer](#transformer-regression) | [CNN](#cnn-regression)
+- **SL Neural Classification** — [Fields](#level-2b-sl-neural-classification) | [Transformer Seq Clf](#transformer-sequence-classification) | [Transformer LM](#transformer-language-model) | [T5 NL-to-SQL](#t5-nl-to-sql-fine-tune--from-scratch)
+- **Metrics Contract** — [Core](#sl-neural--core-epoch-metrics) | [Timing](#sl-neural--timing-metrics) | [Tracking](#sl-neural--tracking-metrics) | [System](#sl-neural--system-metrics) | [Per-Batch](#sl-neural--per-batch-metrics) | [One-Time](#sl-neural--one-time-params) | [Task Eval](#sl-neural-classification--task-eval-metrics) | [Recommended](#recommended-additional-metrics)
+
 ---
 
 ## Level 1a: SL Neural
@@ -16,6 +24,7 @@ For gradient-based, epoch-based supervised training (LSTM, Transformer, CNN, MLP
 | batch_size | integer | `32` | Training batch size |
 | learning_rate | float | `1e-3` | Initial learning rate for optimizer |
 | weight_decay | float | `0.0` | L2 regularization strength |
+| gradient_accumulation_steps | integer | `1` | Accumulate gradients over N batches before optimizer step. Effective batch size = `batch_size * gradient_accumulation_steps` |
 
 ### Optimizer and scheduler
 
@@ -24,6 +33,8 @@ For gradient-based, epoch-based supervised training (LSTM, Transformer, CNN, MLP
 | optimizer | string | `"Adam"` | Optimizer name: `"Adam"`, `"AdamW"`, `"SGD"` |
 | scheduler | string or null | `null` | LR scheduler: `"cosine"`, `"linear"`, `"step"`, or null for none |
 | scheduler_min_lr | float | `1e-6` | Minimum learning rate for scheduler |
+| num_warmup_epochs | integer | `0` | Number of warmup epochs (linear ramp from 0 to `learning_rate`) |
+| warmup_ratio | float or null | `null` | Alternative to `num_warmup_epochs`: warmup as fraction of total steps (more portable across batch sizes). If set, overrides `num_warmup_epochs` |
 
 ### Regularization
 
@@ -37,6 +48,14 @@ For gradient-based, epoch-based supervised training (LSTM, Transformer, CNN, MLP
 | Field | Type | Default | Purpose |
 |-------|------|---------|---------|
 | use_amp | boolean | `true` | bf16 autocast via `torch.amp.autocast('cuda', dtype=torch.bfloat16)`. Requires Ampere+ GPU. Set `false` for older GPUs or debugging |
+
+### Data loading
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| num_workers | integer | `2` | DataLoader worker processes for parallel data loading |
+| pin_memory | boolean | `true` | Pin host memory for faster GPU transfer |
+| prefetch_factor | integer | `2` | Batches to prefetch per worker. Increase if GPU is starved for data |
 
 ### Early stopping
 
@@ -446,9 +465,49 @@ Inherits: SL Neural Classification. For sequence-to-sequence NL-to-SQL translati
 | include_schema | boolean | `false` | Prepend database schema to NL input |
 | max_new_tokens | integer | `256` | Maximum tokens for generation |
 | num_beams | integer | `1` | Beam search width (1 = greedy) |
+| min_new_tokens | integer or null | `null` | Minimum tokens for generation (prevents truncated SQL) |
+| length_penalty | float or null | `null` | Beam search length penalty (>1 favors longer, <1 shorter) |
+| temperature | float | `1.0` | Sampling temperature for generation. Only used in DPO candidate generation; training/eval uses greedy or beam search (deterministic) |
+| top_k | integer or null | `null` | Top-k sampling (limits sampling pool to k highest-probability tokens). Used in DPO candidate generation |
+| top_p | float or null | `null` | Nucleus sampling (limits sampling pool to smallest set with cumulative probability >= p). Used in DPO candidate generation |
 | resume_run_dir | string or null | `null` | Path to previous run directory to resume training |
 | max_wall_clock_hours | float or null | `null` | Stop after this many hours |
 | test_batch_size | integer | `16` | Batch size for eval/test (can differ from training) |
+| label_smoothing | float | `0.0` | Label smoothing for CrossEntropyLoss |
+| schema_mode | string | `"tables"` | Schema format: `"tables"` (table names only) |
+| gradient_accumulation_steps | integer | `1` | Accumulate gradients over N batches before optimizer step. Effective batch size = `batch_size * gradient_accumulation_steps`. Use when auto_batch_size hits VRAM ceiling but larger effective batch is desired |
+| weight_tying | boolean | `true` | Tie encoder/decoder embedding weights (T5 default). Consider disabling when training from scratch if encoder and decoder need distinct representations |
+
+**LoRA fields:**
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| use_lora | boolean | `false` | Enable LoRA (Low-Rank Adaptation) via PEFT |
+| lora_r | integer | `16` | LoRA rank (low-rank dimension) |
+| lora_alpha | integer | `32` | LoRA scaling factor (effective scale = alpha/r) |
+| lora_dropout | float | `0.05` | Dropout on LoRA layers |
+| lora_target_modules | list of strings | `["q", "v"]` | Which attention projections to apply LoRA to |
+
+LoRA initialization is handled internally by PEFT (Kaiming uniform for A matrix, zeros for B matrix). No config field to override.
+
+**LoRA presets used in experiments:**
+
+| Preset | `lora_r` | `lora_alpha` | `lora_target_modules` | Use Case |
+|--------|----------|--------------|----------------------|----------|
+| Standard | 16 | 32 | `["q", "v"]` | Default — fast training, good for fine-tune and DPO |
+| Wide | 32 | 64 | `["q", "k", "v", "o"]` | More adapter capacity, all attention projections |
+| Frozen encoder | 16 | 32 | `["q", "v"]` | Combined with `freeze_encoder=True` for minimal training |
+| Warm-start | 16 | 32 | `["q", "v"]` | Applied on top of a pre-trained FT checkpoint |
+
+**MLP projection head fields:**
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| use_mlp_head | boolean | `false` | Add MLP layer after decoder, before restricted vocab projection |
+| mlp_dim | integer | `1024` | MLP hidden dimension |
+| mlp_dropout | float | `0.1` | MLP dropout |
+
+**DPO/RL alignment fields:** See [rl_fields.md](rl_fields.md) for DPO, GRPO, and CISPO config fields, metrics, reward design, and training stability guidance.
 
 **Checkpointing overrides:**
 
@@ -526,6 +585,8 @@ Logged every batch (step = global batch counter across all epochs):
 | `batch/loss` | per batch | Batch loss (not averaged) |
 | `batch/gradient_norm` | per batch | Batch gradient L2 norm (before clipping) |
 | `batch/lr` | per batch | Current learning rate |
+| `batch/loss_rank` | per batch | Percentile rank of current batch loss within epoch history (0=best, 1=worst) |
+| `batch/gradient_norm_rank` | per batch | Percentile rank of current gradient norm within epoch history |
 
 ### SL Neural — One-Time Params
 
@@ -565,3 +626,70 @@ Same as SL Neural Classification metrics, with these eval_metrics overrides:
 | `dev_perplexity` | per epoch | `eval_metrics` list |
 
 With defaults, each epoch logs: `train_perplexity`, `dev_perplexity`, `gradient_norm`
+
+---
+
+## Recommended Additional Metrics
+
+Metrics not yet implemented but recommended for richer training diagnostics. Add these when setting up new training pipelines or extending existing ones.
+
+### Gradient Health (per epoch)
+
+| Metric Key | Purpose | How to Compute |
+|------------|---------|----------------|
+| `gradient_norm_min` | Detect vanishing gradients | `min(batch_grad_norms)` over epoch |
+| `gradient_norm_max` | Detect exploding gradients before clipping masks them | `max(batch_grad_norms)` over epoch |
+| `gradient_norm_std` | Gradient stability — high std signals noisy optimization | `std(batch_grad_norms)` over epoch |
+
+Average gradient norm alone can mask problems: if some batches explode and others vanish, the average looks normal.
+
+### Effective Update Magnitude (per epoch)
+
+| Metric Key | Purpose | How to Compute |
+|------------|---------|----------------|
+| `effective_update` | Actual parameter update magnitude (more informative than LR alone) | `lr * gradient_norm` per epoch |
+
+Shows how much parameters actually move. Useful when LR and grad norm change in opposite directions (scheduler ramp-down + increasing gradients = stable updates, not visible from either metric alone).
+
+### Token-Level Accuracy (per epoch, seq2seq tasks)
+
+| Metric Key | Purpose | How to Compute |
+|------------|---------|----------------|
+| `token_accuracy` | Per-token prediction accuracy on dev set | `correct_tokens / total_tokens` (excluding padding) |
+
+Gives signal every epoch even when Record F1 is noisy from SQL execution errors. A model with high token accuracy but low F1 suggests correct SQL syntax with wrong values. Cheap to compute alongside dev_loss.
+
+### Surface-Level Generation Quality (per eval epoch)
+
+| Metric Key | Purpose | How to Compute |
+|------------|---------|----------------|
+| `bleu` | Surface similarity of generated vs reference SQL | `sacrebleu.corpus_bleu(predictions, [references])` |
+| `chrf` | Character-level F-score — more robust than BLEU for short outputs | `sacrebleu.corpus_chrf(predictions, [references])` |
+
+Independent of SQL execution. Catches generation quality regressions even when evaluation DB is unavailable or slow.
+
+### Inference Performance (per eval epoch)
+
+| Metric Key | Purpose | How to Compute |
+|------------|---------|----------------|
+| `inference/tokens_per_sec` | Generation throughput | `total_generated_tokens / generation_wall_time` |
+| `inference/avg_output_length` | Average generated sequence length | `mean(output_lengths)` |
+| `inference/ms_per_sample` | Latency per example | `generation_wall_time * 1000 / num_samples` |
+
+Catches generation degeneration (infinite loops, excessive beam expansion) and tracks deployment readiness.
+
+### Memory Health (per epoch)
+
+| Metric Key | Purpose | How to Compute |
+|------------|---------|----------------|
+| `system/gpu_mem_fragmentation_mb` | Early warning for OOM before it happens | `gpu_mem_reserved_mb - gpu_mem_allocated_mb` |
+
+High fragmentation (large gap between reserved and allocated) means CUDA has memory but can't use it contiguously. Precursor to OOM even when `nvidia-smi` shows free memory.
+
+### Overfitting Detection (per eval epoch)
+
+| Metric Key | Purpose | How to Compute |
+|------------|---------|----------------|
+| `overfit_ratio` | Ratio of dev loss to train loss — rising ratio signals overfitting | `dev_loss / train_loss` |
+
+A ratio near 1.0 means good generalization. Rising above 1.5-2.0 signals overfitting. More actionable than watching two separate loss curves diverge visually.

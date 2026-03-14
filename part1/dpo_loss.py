@@ -93,7 +93,7 @@ def dpo_loss(policy_chosen_logps, policy_rejected_logps,
 
 def dpo_train_step(policy_model, ref_model, batch, optimizer,
                    beta=0.1, grad_clip_norm=1.0, device="cuda",
-                   use_amp=True):
+                   use_amp=True, accumulate=False, accum_scale=1.0):
     """Single DPO training step.
 
     Args:
@@ -106,6 +106,8 @@ def dpo_train_step(policy_model, ref_model, batch, optimizer,
         grad_clip_norm: max gradient norm for clipping
         device: target device
         use_amp: enable bf16 autocast
+        accumulate: if True, only do forward+backward (no zero_grad/clip/step)
+        accum_scale: scale factor for loss when accumulating (1/accum_steps)
 
     Returns:
         dict with: loss, reward_margin, reward_accuracy,
@@ -136,12 +138,17 @@ def dpo_train_step(policy_model, ref_model, batch, optimizer,
         policy_chosen_logps.float(), policy_rejected_logps.float(),
         ref_chosen_logps.float(), ref_rejected_logps.float(), beta=beta)
 
-    # Backward + grad clip + optimizer step
-    optimizer.zero_grad()
-    loss.backward()
-    grad_norm = torch.nn.utils.clip_grad_norm_(
-        policy_model.parameters(), grad_clip_norm).item()
-    optimizer.step()
+    # Backward (scaled for accumulation)
+    scaled_loss = loss * accum_scale if accumulate else loss
+    if not accumulate:
+        optimizer.zero_grad()
+    scaled_loss.backward()
+
+    grad_norm = 0.0
+    if not accumulate:
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            policy_model.parameters(), grad_clip_norm).item()
+        optimizer.step()
 
     # Metrics for logging
     with torch.no_grad():
@@ -162,7 +169,7 @@ def dpo_train_step(policy_model, ref_model, batch, optimizer,
 
 def dpo_train_step_lora(policy_model, batch, optimizer,
                         beta=0.1, grad_clip_norm=1.0, device="cuda",
-                        use_amp=True):
+                        use_amp=True, accumulate=False, accum_scale=1.0):
     """Single DPO training step for LoRA policy (single model, no separate ref).
 
     Uses peft disable_adapter_layers() to get reference logprobs from the
@@ -177,6 +184,8 @@ def dpo_train_step_lora(policy_model, batch, optimizer,
         grad_clip_norm: max gradient norm for clipping
         device: target device
         use_amp: enable bf16 autocast
+        accumulate: if True, only do forward+backward (no zero_grad/clip/step)
+        accum_scale: scale factor for loss when accumulating (1/accum_steps)
 
     Returns:
         dict with: loss, reward_margin, reward_accuracy,
@@ -209,12 +218,17 @@ def dpo_train_step_lora(policy_model, batch, optimizer,
         policy_chosen_logps.float(), policy_rejected_logps.float(),
         ref_chosen_logps.float(), ref_rejected_logps.float(), beta=beta)
 
-    # Backward + grad clip + optimizer step
-    optimizer.zero_grad()
-    loss.backward()
-    grad_norm = torch.nn.utils.clip_grad_norm_(
-        policy_model.parameters(), grad_clip_norm).item()
-    optimizer.step()
+    # Backward (scaled for accumulation)
+    scaled_loss = loss * accum_scale if accumulate else loss
+    if not accumulate:
+        optimizer.zero_grad()
+    scaled_loss.backward()
+
+    grad_norm = 0.0
+    if not accumulate:
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            policy_model.parameters(), grad_clip_norm).item()
+        optimizer.step()
 
     # Metrics for logging
     with torch.no_grad():

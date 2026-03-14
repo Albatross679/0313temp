@@ -75,7 +75,10 @@ def save_model(checkpoint_dir, model, best=False,
         torch.save(merged.state_dict(), path)
         del inner_copy, merged
     else:
-        torch.save(model.state_dict(), path)
+        # Always save the inner T5 state_dict, not the wrapper (e.g.
+        # T5ForFlightSQL / T5ForFlightSQLWithMLP which adds MLP keys
+        # that would fail to load into a vanilla T5ForConditionalGeneration).
+        torch.save(inner.state_dict(), path)
 
 
 def save_training_state(checkpoint_dir, model, optimizer, scheduler,

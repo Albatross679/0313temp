@@ -14,12 +14,13 @@ import time
 from pathlib import Path
 
 import torch
+import transformers
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from part1.data import PAD_IDX, _TOKENIZER, _load_schema_string, load_t5_data
-from part1.dpo_loss import dpo_train_step, dpo_train_step_lora
+from part1.dpo_loss import dpo_train_step, dpo_train_step_lora, _amp_context
 from part1.model import initialize_model, load_model_from_checkpoint, save_model
 from part1.model_flightdb import FlightSQLVocab, T5ForFlightSQL
 from part1.train import (
@@ -30,7 +31,9 @@ from part1.train import (
     stop_requested,
     test_inference,
 )
-from src.wandb_utils import end_run, log_epoch_metrics, log_extra_params, setup_run
+from src.wandb_utils import (
+    end_run, log_epoch_metrics, log_extra_params, log_model_artifact, setup_run,
+)
 from utils import compute_metrics, save_queries_and_records, set_random_seeds
 
 _BOS_ID = _TOKENIZER.convert_tokens_to_ids("<extra_id_0>")
@@ -133,11 +136,95 @@ def load_preference_data(path):
     return triplets
 
 
+# ── Auto batch size ──────────────────────────────────────────────────────────
+
+
+def dpo_auto_batch_size(cfg, policy_model, ref_model, dpo_dataset,
+                        device, target_vram_pct=0.85):
+    """Find the largest DPO batch size that fits in GPU VRAM.
+
+    Probes with a real DPO forward+backward pass (4 restricted_forward calls
+    for full-FT, or 4 with adapter toggling for LoRA) at increasing batch sizes.
+
+    Args:
+        cfg: T5DPOConfig instance
+        policy_model: T5ForFlightSQL (policy, possibly with LoRA)
+        ref_model: T5ForFlightSQL (frozen reference) or None for LoRA
+        dpo_dataset: DPODataset instance
+        device: torch device
+        target_vram_pct: fraction of total VRAM to target
+
+    Returns:
+        optimal batch size (int)
+    """
+    if not torch.cuda.is_available():
+        return cfg.batch_size
+
+    total_vram = torch.cuda.get_device_properties(0).total_memory
+    target_bytes = total_vram * target_vram_pct
+    use_lora = getattr(cfg, "use_lora", False)
+    use_amp = getattr(cfg, "use_amp", True)
+    best_bs = cfg.batch_size
+
+    # Candidate batch sizes: current, then double until 256
+    candidates = [cfg.batch_size]
+    bs = cfg.batch_size * 2
+    while bs <= 256:
+        candidates.append(bs)
+        bs *= 2
+
+    for bs in candidates:
+        try:
+            cleanup_vram()
+            # Build a probe loader with this batch size
+            probe_loader = DataLoader(
+                dpo_dataset, batch_size=bs,
+                shuffle=False, collate_fn=dpo_collate_fn,
+            )
+            batch = next(iter(probe_loader))
+
+            # Run actual DPO train step (forward + backward + optimizer step)
+            probe_opt = torch.optim.AdamW(
+                [p for p in policy_model.parameters() if p.requires_grad],
+                lr=1e-6,
+            )
+            if use_lora:
+                dpo_train_step_lora(
+                    policy_model, batch, probe_opt,
+                    beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
+                    device=device, use_amp=use_amp,
+                )
+            else:
+                dpo_train_step(
+                    policy_model, ref_model, batch, probe_opt,
+                    beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
+                    device=device, use_amp=use_amp,
+                )
+
+            used = torch.cuda.memory_allocated()
+            del probe_loader, batch, probe_opt
+            cleanup_vram()
+
+            if used < target_bytes:
+                best_bs = bs
+            else:
+                break
+        except RuntimeError:
+            # OOM — use previous best
+            cleanup_vram()
+            break
+
+    # Clean up probe state
+    policy_model.zero_grad(set_to_none=True)
+    cleanup_vram()
+    return best_bs
+
+
 # ── Training loop ────────────────────────────────────────────────────────────
 
 
 def dpo_train(cfg, policy_model, ref_model, train_loader, dev_loader,
-              optimizer, run_dir):
+              optimizer, scheduler, run_dir):
     """DPO training loop following part1/train.py patterns.
 
     Args:
@@ -147,6 +234,7 @@ def dpo_train(cfg, policy_model, ref_model, train_loader, dev_loader,
         train_loader: DataLoader of DPO preference batches
         dev_loader: standard T5 dev DataLoader for evaluation
         optimizer: optimizer for policy_model parameters
+        scheduler: LR scheduler (or None for fixed LR)
         run_dir: Path to run output directory
 
     Returns:
@@ -160,10 +248,15 @@ def dpo_train(cfg, policy_model, ref_model, train_loader, dev_loader,
     best_metrics = {}
     epochs_since_improvement = 0
     train_start = time.time()
+    patience_tolerance = getattr(cfg, "patience_tolerance", 0.0)
 
     gt_sql_path = "data/dev.sql"
     gt_record_path = "records/ground_truth_dev.pkl"
     global_step = 0
+
+    grad_accum_steps = getattr(cfg, "gradient_accumulation_steps", 1)
+    use_lora = getattr(cfg, "use_lora", False)
+    use_amp = getattr(cfg, "use_amp", True)
 
     for epoch in range(cfg.num_epochs):
         epoch_start = time.time()
@@ -175,41 +268,57 @@ def dpo_train(cfg, policy_model, ref_model, train_loader, dev_loader,
         epoch_reward_accuracy = 0.0
         epoch_grad_norm = 0.0
         num_batches = 0
+        optimizer.zero_grad()
 
-        for batch in tqdm(train_loader, desc=f"DPO Epoch {epoch}"):
-            use_lora = getattr(cfg, "use_lora", False)
+        for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"DPO Epoch {epoch}")):
             if use_lora:
                 metrics = dpo_train_step_lora(
                     policy_model, batch, optimizer,
                     beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
-                    device=device,
+                    device=device, use_amp=use_amp,
+                    accumulate=(grad_accum_steps > 1),
+                    accum_scale=1.0 / grad_accum_steps,
                 )
             else:
                 metrics = dpo_train_step(
                     policy_model, ref_model, batch, optimizer,
                     beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
-                    device=device,
+                    device=device, use_amp=use_amp,
+                    accumulate=(grad_accum_steps > 1),
+                    accum_scale=1.0 / grad_accum_steps,
                 )
 
             epoch_loss += metrics["loss"]
             epoch_reward_margin += metrics["reward_margin"]
             epoch_reward_accuracy += metrics["reward_accuracy"]
-            epoch_grad_norm += metrics["grad_norm"]
             num_batches += 1
+
+            # Optimizer step every grad_accum_steps or at end of epoch
+            if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(train_loader):
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    policy_model.parameters(), cfg.grad_clip_norm).item()
+                optimizer.step()
+                optimizer.zero_grad()
+                epoch_grad_norm += grad_norm
+
+                # Step the scheduler per optimizer step
+                if scheduler is not None:
+                    scheduler.step()
 
             # Log batch-level metrics
             log_epoch_metrics({
                 "batch/loss": metrics["loss"],
                 "batch/reward_margin": metrics["reward_margin"],
                 "batch/reward_accuracy": metrics["reward_accuracy"],
-                "batch/gradient_norm": metrics["grad_norm"],
+                "batch/gradient_norm": metrics.get("grad_norm", 0.0),
             }, step=global_step)
             global_step += 1
 
         avg_loss = epoch_loss / num_batches
         avg_reward_margin = epoch_reward_margin / num_batches
         avg_reward_accuracy = epoch_reward_accuracy / num_batches
-        avg_grad_norm = epoch_grad_norm / num_batches
+        num_opt_steps = max(1, num_batches // grad_accum_steps)
+        avg_grad_norm = epoch_grad_norm / num_opt_steps
 
         train_epoch_seconds = time.time() - epoch_start
         print(f"Epoch {epoch}: DPO loss = {avg_loss:.4f}, "
@@ -259,8 +368,8 @@ def dpo_train(cfg, policy_model, ref_model, train_loader, dev_loader,
                 "timing/train_epoch_seconds": train_epoch_seconds,
             }, step=epoch)
 
-            # Checkpointing on dev Record F1
-            improved = record_f1 > best_val
+            # Checkpointing on dev Record F1 (with patience_tolerance)
+            improved = record_f1 > best_val + patience_tolerance
             log_epoch_metrics({
                 "tracking/best_record_f1": record_f1 if improved else best_val,
                 "tracking/epochs_since_improvement": 0 if improved else epochs_since_improvement + 1,
@@ -277,6 +386,9 @@ def dpo_train(cfg, policy_model, ref_model, train_loader, dev_loader,
                 print(f"  -> New best dev F1: {best_val:.4f} (saved)")
             else:
                 epochs_since_improvement += 1
+
+            # Always save last checkpoint
+            save_model(ckpt_dir, policy_model, best=False)
         else:
             # Non-eval epoch: just log training metrics
             log_epoch_metrics({
@@ -350,15 +462,31 @@ def apply_cli_overrides(cfg, args):
             setattr(cfg, attr, val)
 
 
-def main():
-    from part1.config import T5DPOConfig, T5DPOConfig_lora
+def _build_scheduler(cfg, optimizer, steps_per_epoch):
+    """Build LR scheduler from config fields (cosine/linear with warmup)."""
+    scheduler_type = getattr(cfg, "scheduler", "none") or "none"
+    if scheduler_type == "none":
+        return None
 
-    args = parse_args()
-    if args.use_lora:
-        cfg = T5DPOConfig_lora()
+    num_training_steps = steps_per_epoch * cfg.num_epochs
+    num_warmup_steps = steps_per_epoch * getattr(cfg, "num_warmup_epochs", 0)
+
+    if scheduler_type == "cosine":
+        return transformers.get_cosine_schedule_with_warmup(
+            optimizer, num_warmup_steps, num_training_steps)
+    elif scheduler_type == "linear":
+        return transformers.get_linear_schedule_with_warmup(
+            optimizer, num_warmup_steps, num_training_steps)
     else:
-        cfg = T5DPOConfig()
-    apply_cli_overrides(cfg, args)
+        raise ValueError(f"Unknown scheduler: {scheduler_type}")
+
+
+def main_with_config(cfg):
+    """Run the full DPO training pipeline with a pre-built config.
+
+    Used by: main() (CLI entry), sweep scripts (W&B sweeps), and any
+    programmatic caller that constructs a config object directly.
+    """
     set_random_seeds(cfg.seed)
     device = cfg.device
 
@@ -440,12 +568,35 @@ def main():
             "Reference model has trainable parameters!"
         print("Reference model loaded and frozen")
 
+    # ── Auto batch size ──
+    if getattr(cfg, "auto_batch_size", False) and torch.cuda.is_available():
+        optimal_bs = dpo_auto_batch_size(
+            cfg, policy_model, ref_model, dpo_ds, device,
+        )
+        if optimal_bs != cfg.batch_size:
+            print(f"Auto batch size: {cfg.batch_size} → {optimal_bs}")
+            cfg.batch_size = optimal_bs
+            # Rebuild loaders with optimal batch size
+            dpo_loader = DataLoader(
+                dpo_ds, batch_size=cfg.batch_size,
+                shuffle=True, collate_fn=dpo_collate_fn,
+            )
+            _, dev_loader, test_loader = load_t5_data(
+                cfg.batch_size, cfg.test_batch_size,
+                input_prefix=cfg.input_prefix,
+                include_schema=cfg.include_schema,
+                schema_mode=getattr(cfg, "schema_mode", "tables"),
+            )
+
     # ── Optimizer (policy only) ──
     optimizer = torch.optim.AdamW(
         policy_model.parameters(),
         lr=cfg.learning_rate,
         weight_decay=cfg.weight_decay,
     )
+
+    # ── LR scheduler ──
+    scheduler = _build_scheduler(cfg, optimizer, len(dpo_loader))
 
     # ── W&B setup ──
     run_dir, _ = setup_run(cfg, experiment_name="part1_dpo")
@@ -468,7 +619,7 @@ def main():
     # ── Train ──
     best_val = dpo_train(
         cfg, policy_model, ref_model, dpo_loader, dev_loader,
-        optimizer, run_dir,
+        optimizer, scheduler, run_dir,
     )
 
     # ── Final eval: reload best checkpoint ──
@@ -487,7 +638,6 @@ def main():
         print("\nReloaded best checkpoint for final evaluation")
     else:
         print("\nNo best checkpoint saved; using current model state")
-        # This shouldn't happen if training ran at least one eval epoch
         final_model = ref_model  # fallback
         final_model.eval()
 
@@ -509,11 +659,31 @@ def main():
         device,
     )
 
+    # ── Upload best model artifact to W&B ──
+    if os.path.exists(best_ckpt):
+        log_model_artifact(
+            best_ckpt,
+            artifact_name=f"{cfg.name}-best",
+            metadata={"record_f1": best_val, "dpo_beta": cfg.dpo_beta},
+        )
+
     # ── Cleanup ──
     end_run()
     del final_model, ref_model
     cleanup_vram()
     print("DPO training pipeline complete")
+
+
+def main():
+    from part1.config import T5DPOConfig, T5DPOConfig_lora
+
+    args = parse_args()
+    if args.use_lora:
+        cfg = T5DPOConfig_lora()
+    else:
+        cfg = T5DPOConfig()
+    apply_cli_overrides(cfg, args)
+    main_with_config(cfg)
 
 
 if __name__ == "__main__":

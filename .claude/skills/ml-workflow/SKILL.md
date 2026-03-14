@@ -4,7 +4,8 @@ description: |
   User's preferred workflow, conventions, and style for machine learning experiments.
   Covers: config system (hierarchical dataclass configs for neural, tree, and RL pipelines),
   experiment tracking (W&B), training execution (sequential auto-batch, VRAM management, bf16),
-  monitoring (/loop), hyperparameter strategy (W&B Bayesian sweeps, wall-clock budgets, config combinations),
+  monitoring (/loop), hyperparameter strategy (W&B random sweeps, early-stopping-only, config combinations),
+  RL/alignment algorithms (PPO, SAC, DQN, DPO, GRPO, CISPO), reward design, training stability,
   codebase structure, and documentation expectations.
   Use when: (1) Setting up experiment configurations for any ML framework,
   (2) Creating configs for SL Neural, SL Tree, RL, or PPO training pipelines,
@@ -13,7 +14,9 @@ description: |
   (5) Launching training runs or scheduling batches,
   (6) Monitoring active training,
   (7) Planning hyperparameter searches or ablation studies,
-  (8) Scaffolding a new ML project or adding a new model/task.
+  (8) Scaffolding a new ML project or adding a new model/task,
+  (9) Setting up RL alignment training (DPO, GRPO, CISPO) or classic RL (PPO, SAC, DQN),
+  (10) Designing reward functions or diagnosing RL training instability.
   Works with: PyTorch, Hugging Face, TensorFlow/Keras, XGBoost, LightGBM, CatBoost, JAX.
   Always apply these preferences unless the user explicitly overrides them.
 ---
@@ -29,7 +32,7 @@ Hierarchical `@dataclass` configs for all ML experiments. See [references/config
 **Field references** (read on demand for detailed field tables):
 - [references/sl_neural_fields.md](references/sl_neural_fields.md) — SL Neural + Regression + Classification + task configs (LSTM, Transformer, CNN, T5)
 - [references/sl_tree_fields.md](references/sl_tree_fields.md) — SL Tree + Regression + task configs (XGBoost, LightGBM, CatBoost)
-- [references/rl_fields.md](references/rl_fields.md) — RL + PPO fields
+- [references/rl_fields.md](references/rl_fields.md) — RL: Classic Control (PPO, SAC, DQN) + LLM Alignment (DPO, GRPO, CISPO), metrics, reward design, stability
 
 ## Experiment Tracking: Weights & Biases
 
@@ -137,12 +140,22 @@ with torch.inference_mode(), _amp_context(cfg.use_amp, device):
 Any script expected to run >5 minutes (training, inference, experiment batches) MUST be launched with `nohup` so it survives terminal/session restarts (e.g., tmux window reloads, Claude Code session reconnects):
 
 ```bash
-nohup <command> > output/<descriptive_log>.txt 2>&1 &
+PYTHONUNBUFFERED=1 nohup <command> > output/<descriptive_log>.txt 2>&1 &
 ```
+
+**Always set `PYTHONUNBUFFERED=1`** — Python buffers stdout when not connected to a TTY (i.e., piped or redirected by `nohup`), so without this, log files show no output for long periods and monitoring is ineffective.
 
 Then monitor with `tail -f output/<log>.txt` or `/loop`.
 
 This applies to all execution contexts — manual runs, GSD execute-phase tasks, and any agent-spawned training jobs. Without `nohup`, child processes receive SIGHUP when the parent session dies and are killed mid-run.
+
+### Hung Process Watchdog
+
+PyTorch/CUDA can deadlock during post-training cleanup (`gc.collect()` / `torch.cuda.empty_cache()`), especially when `ThreadPoolExecutor` threads are still active. The process blocks on `futex_wait_queue_me` indefinitely even though W&B has marked the run FINISHED and all outputs are saved.
+
+**Prevention:** For sequential training scripts (multiple configs in one process), add a watchdog that polls W&B run status and kills the training process if it's still alive N minutes after the run is marked FINISHED. Treat exit codes 137 (SIGKILL) and 143 (SIGTERM) from the watchdog as success.
+
+**Ad-hoc detection:** If monitoring (`/loop`) shows a process alive but no log activity and W&B shows FINISHED, confirm outputs are saved, then `kill` the process manually.
 
 ### Graceful Stop
 
@@ -152,21 +165,19 @@ Support two stop mechanisms:
 
 Both drain pending async work, save checkpoints, and finish W&B run before exiting.
 
-## Monitoring with /loop
+## Known Issues
 
-After launching a background training run, always start a monitoring loop:
+Common training pitfalls and their fixes. See [references/known-issues.md](references/known-issues.md) for the full catalog (process/lifecycle, memory/OOM, model/checkpoint, evaluation, decoding). Check these patterns first when diagnosing training problems — most are recurring.
+
+## Monitoring
+
+After launching a background training run, always start the babysit-training skill:
 
 ```
-/loop 20m Check on training status. Read the latest training log output, verify the process is still running, check GPU utilization, and confirm loss is decreasing / metrics are improving. If any issues are found (OOM, NaN loss, stuck training, process died), diagnose the root cause, fix it, restart training, and document the issue in issues/<topic>.md with proper frontmatter. If training is healthy, briefly report current epoch, loss, and primary eval metric for the active config.
+/loop 10m /babysit-training
 ```
 
-The monitoring agent should:
-1. Check process is alive (`ps aux | grep python.*train`)
-2. Read latest log output or `metrics.jsonl` for the active run
-3. Verify loss is decreasing and eval metric is improving
-4. Check GPU utilization and temperature
-5. If an issue is found: diagnose, fix, restart, and write an issue doc
-6. If healthy: report a brief status line
+The `babysit-training` skill handles all monitoring: process health, metric trending, GPU/system checks, checkpoint integrity, hung process detection, auto-restart from checkpoint on crash, and issue documentation. See that skill for the full check sequence.
 
 ## Experiment Strategy
 
@@ -178,13 +189,17 @@ Always create **enough config variants** to explore the design space meaningfull
 - At least one "aggressive" variant pushing multiple dimensions
 - Each variant is its own dataclass config inheriting from a base, with only the differing fields overridden
 
-### Wall-Clock Time Budget
+### Stopping Strategy
 
-Experiment batches are scheduled by **wall-clock time budget**, not by number of epochs. Set `max_wall_clock_hours` on each config so the entire batch fits within the available compute window. Early stopping and time budgets work together — a config that converges early frees time for the next one.
+**Early stopping is the primary mechanism** for deciding when training should stop. Do not set hard epoch caps (`num_epochs`) or wall-clock time limits (`max_wall_clock_hours`) per trial/config — let early stopping handle convergence detection.
+
+- `max_wall_clock_hours` is only used at the **sweep level** (`--max-hours`) to bound total compute, not per trial.
+- `num_epochs` should be set high (effectively unlimited) so early stopping is the binding constraint.
+- A config that converges early frees time for the next one in a sequential batch.
 
 ### W&B Hyperparameter Sweeps
 
-For systematic hyperparameter search, use **W&B Bayesian sweeps** with Hyperband early termination. Preferred over grid/random search or manual config variants when the search space is large.
+For systematic hyperparameter search, use **W&B random sweeps**. Preferred over grid search or manual config variants when the search space is large. Random search gives broader coverage across architecture types than Bayesian search, which tends to over-exploit early winners.
 
 **Architecture pattern:**
 1. **Sweep script** (`partN/sweep.py`) — defines search space, creates sweep, runs agent. Lives alongside its part's config/train modules.
@@ -218,11 +233,11 @@ def sweep_train():
     ...
 ```
 
-**Time budget controls:**
-- `--budget` — per-trial wall clock limit (hours)
+**Sweep-level controls:**
 - `--max-hours` — total sweep wall clock limit; auto-stops when exhausted
 - `--count` — max trials (default 100, effectively unlimited)
 - Manual stop: Ctrl+C in tmux, or `touch STOP` from another terminal
+- Per-trial stopping is handled by **early stopping only** — no per-trial epoch cap or time budget
 
 **Execution:** Run sweeps in a **tmux session** (not `nohup`) — single process runs trials sequentially, compatible with GPU lock:
 ```bash

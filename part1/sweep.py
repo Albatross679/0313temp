@@ -112,8 +112,9 @@ def sweep_train():
         if hasattr(cfg, key):
             setattr(cfg, key, val)
 
-    # Per-trial time budget and naming
-    cfg.max_wall_clock_hours = _BUDGET_HOURS
+    # No per-trial epoch or time cap — let early stopping decide
+    cfg.max_wall_clock_hours = None
+    cfg.num_epochs = 9999
     cfg.name = f"t5_ft_base_sweep_{run.id[:6]}"
 
     try:

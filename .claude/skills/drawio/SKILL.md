@@ -1,6 +1,12 @@
 ---
 name: drawio
-description: Generate draw.io diagrams as .drawio files, optionally export to PNG/SVG/PDF with embedded XML
+description: |
+  Generate draw.io diagrams as .drawio files, optionally export to PNG/SVG/PDF with embedded XML.
+  Use when: (1) Creating any diagram as a .drawio file (flowcharts, architecture, ER, sequence),
+  (2) Generating neural network computation graphs or model architecture diagrams in draw.io format,
+  (3) Visualizing transformer, CNN, RNN, or MLP architectures as editable .drawio files,
+  (4) Exporting diagrams to PNG/SVG/PDF with embedded XML for editability,
+  (5) Creating publication-quality static architecture diagrams (vs interactive HTML from computation-graph skill).
 ---
 
 # Draw.io Diagram Skill
@@ -239,6 +245,27 @@ Set `parent="containerId"` on child cells. Children use **relative coordinates**
   <mxGeometry x="10" y="10" width="120" height="60" as="geometry"/>
 </mxCell>
 ```
+
+## Neural Network Computation Graphs
+
+For NN architecture diagrams (transformers, CNNs, MLPs, etc.), read and apply the rules in [rules/nn-computation-graph.md](rules/nn-computation-graph.md). This covers:
+- Standardized color palette for NN components (attention, FFN, normalization, etc.)
+- LaTeX/MathJax formula rendering via `math="1"` attribute
+- Container patterns for layer grouping (swimlanes)
+- Edge conventions for data flow vs residual/skip connections
+- Tensor shape annotation format
+- Architecture-specific patterns (pre-norm, post-norm, encoder-decoder)
+
+### Templates
+
+Reusable `.drawio` template files for common architectures — copy and customize:
+- [templates/transformer-encoder.drawio](templates/transformer-encoder.drawio) — Full encoder with embedding, positional encoding, MHA, FFN, residual connections, LayerNorm
+- [templates/transformer-decoder.drawio](templates/transformer-decoder.drawio) — Full decoder with masked self-attention, cross-attention, FFN, output head
+- [templates/simple-ffn.drawio](templates/simple-ffn.drawio) — Simple feed-forward network with Linear, ReLU, Dropout
+
+### Shape Library
+
+Import [assets/nn-components.xml](assets/nn-components.xml) into draw.io for drag-and-drop NN components: In draw.io desktop/web, go to File > Open Library and select the XML file. This adds a sidebar panel with pre-styled Input/Output, Embedding, Attention, LayerNorm, FFN, Linear, Residual Add, Softmax, Dropout, Activation, Loss, Positional Encoding, Concatenation, and Layer Container shapes.
 
 ## Style reference
 

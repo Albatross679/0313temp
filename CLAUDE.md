@@ -167,7 +167,7 @@ After launching background training, always start `/loop 20m` to check: process 
 
 ## LaTeX Report
 
-Report lives in `report/`. Compiled with **LaTeX Workshop** (VSCode extension).
+Report lives in `report/`. Compile with `latexmk -pdf report.tex` from the `report/` directory.
 
 ```
 report/
@@ -178,7 +178,6 @@ report/
 └── report.pdf                # compiled output
 ```
 
-- LaTeX Workshop compiles on save — do NOT run `pdflatex`/`latexmk` from terminal.
 - Images in `media/`, include with `\includegraphics`.
 
 ---
