@@ -30,7 +30,8 @@ These are the user's established conventions for ML experiment work. Follow them
 Hierarchical `@dataclass` configs for all ML experiments. See [references/config-system.md](references/config-system.md) for the full spec (Base fields, built-in infrastructure, output conventions, framework adaptation).
 
 **Field references** (read on demand for detailed field tables):
-- [references/sl_neural_fields.md](references/sl_neural_fields.md) — SL Neural + Regression + Classification + task configs (LSTM, Transformer, CNN, T5)
+- [references/sl_neural_fields.md](references/sl_neural_fields.md) — SL Neural base + Regression + Classification fields, metrics contract
+- [references/sl_neural_tasks.md](references/sl_neural_tasks.md) — Task configs: LSTM, Transformer, CNN, Transformer Seq Clf, Transformer LM, T5 NL-to-SQL
 - [references/sl_tree_fields.md](references/sl_tree_fields.md) — SL Tree + Regression + task configs (XGBoost, LightGBM, CatBoost)
 - [references/rl_fields.md](references/rl_fields.md) — RL: Classic Control (PPO, SAC, DQN) + LLM Alignment (DPO, GRPO, CISPO), metrics, reward design, stability
 
@@ -129,11 +130,22 @@ with torch.inference_mode(), _amp_context(cfg.use_amp, device):
 
 **GPU requirement:** Ampere+ (A100, 3090, 4090, 5090). On older GPUs, set `use_amp=False`.
 
-### VRAM Maximization
+### VRAM Maximization (Auto Batch Size)
 
-- Enable auto batch size tuning when available — find the largest batch size that fits VRAM.
+Auto batch size tuning finds the largest batch size that fits VRAM. Enabled via `auto_batch_size=True` in config (default for SLNeuralConfig).
+
+**Probing strategy (worst-case measurement):**
+1. **Sort dataset by sequence length** — build probe batches from the longest samples. Variable-length sequences cause up to 2x memory difference between shortest and longest batches.
+2. **Measure peak allocation** — use `torch.cuda.max_memory_allocated()` with `reset_peak_memory_stats()` before each probe.
+3. **Two-phase search:** coarse (powers of 2) to find the ceiling, then fine (intermediate values between last passing and first failing).
+4. **Target 85% of total VRAM** — the 15% margin covers allocator fragmentation and runtime overhead.
+
+**Other VRAM practices:**
 - Clean VRAM between sequential configs (model deletion + cache clear).
 - bf16 autocast roughly halves VRAM per sample, allowing auto_batch_size to find larger batches.
+- `gradient_accumulation_steps` extends effective batch size beyond VRAM ceiling when auto_batch_size finds the physical limit.
+
+**DPO/RL-specific auto-batch considerations:** See [references/rl_fields.md](references/rl_fields.md) § Auto Batch Size for DPO.
 
 ### Long-Running Process Resilience
 

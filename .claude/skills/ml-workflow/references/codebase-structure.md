@@ -16,7 +16,7 @@ project-root/
 │
 ├── src/                     # Shared infrastructure (never duplicated per-part)
 │   ├── config.py            # Config hierarchy: BaseConfig → SLNeuralConfig → TaskConfig
-│   ├── mlflow_utils.py      # Experiment tracking (W&B). Named "mlflow" for legacy reasons
+│   ├── wandb_utils.py       # Experiment tracking (W&B)
 │   └── utils/
 │       └── system_metrics.py  # GPU/CPU/RAM collection per epoch
 │
@@ -24,7 +24,6 @@ project-root/
 │   ├── config.py            # All config variants as @dataclass classes
 │   ├── data.py              # Dataset class, collate functions, DataLoader factory
 │   ├── model.py             # Model init, save_model, load_model, save/load training state
-│   ├── model_domain.py      # Domain-specific wrapper (e.g. restricted vocab, MLP head)
 │   ├── train.py             # Training loop: main(), train(), eval, multi-config batch
 │   └── eval_checkpoint.py   # Standalone eval for saved checkpoints
 │
@@ -79,8 +78,6 @@ class MyConfig_aggressive(BaseTaskConfig):
 
 **model.py** — `initialize_model()` (pretrained or random init, optional layer freezing), `save_model()` (handles special cases like LoRA merge), `load_model_from_checkpoint()`, `save_training_state()` / `load_training_state()` for resume.
 
-**model_domain.py** — Domain-specific wrappers around the base model. Examples: restricted output vocabulary, MLP projection head, custom `generate()` constraints. Wraps the base model as `self.model` and delegates standard methods.
-
 **train.py** — The main training script. Structure:
 
 ```
@@ -116,7 +113,7 @@ main()
 
 All configs support `to_dict()` / `from_dict()` serialization with recursive type resolution. Nested sub-configs (`CheckpointingConfig`, `OutputConfig`, etc.) as embedded dataclasses.
 
-**mlflow_utils.py** — Experiment tracking wrapper (W&B). Legacy filename; these functions:
+**wandb_utils.py** — Experiment tracking wrapper (W&B). Functions:
 - `setup_run(cfg)` — create output dir, save config.json, `wandb.init()`, define custom metric axes
 - `log_epoch_metrics(metrics_dict, step)` — route `batch/*` keys to global_step axis, all others to epoch axis
 - `log_extra_params(params)` — one-time metadata (model size, dataset size, hardware)

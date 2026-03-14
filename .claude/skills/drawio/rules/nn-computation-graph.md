@@ -2,19 +2,32 @@
 
 Rules for generating neural network architecture diagrams in draw.io format. Apply these conventions whenever the user requests an NN architecture, computation graph, or model diagram via the drawio skill.
 
-## Math/LaTeX Setup
+## Formulas and Math Notation
 
-Enable MathJax by setting `math="1"` on the root `<mxGraphModel>` element:
+**IMPORTANT: Do NOT use MathJax/LaTeX (`$$...$$`) in NN computation graphs.** The draw.io CLI export (`drawio -x`) and VS Code extension both fail to render MathJax — formulas appear as raw `$$\text{...}$$` text in the exported PNG/SVG. The desktop app renders them, but since diagrams are typically exported via CLI for automation, LaTeX is unreliable.
 
-```xml
-<mxGraphModel math="1" dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" background="#ffffff">
+**Instead, use HTML entities and tags** which render correctly everywhere:
+
+| Math concept | Use this (HTML) | NOT this (LaTeX) |
+|---|---|---|
+| Superscript | `W&lt;sup&gt;T&lt;/sup&gt;` | `$$W^T$$` |
+| Subscript | `Q&lt;sub&gt;dec&lt;/sub&gt;` | `$$Q_{dec}$$` |
+| Square root | `&amp;radic;d&lt;sub&gt;k&lt;/sub&gt;` | `$$\sqrt{d_k}$$` |
+| Real numbers | `&amp;#x211D;&lt;sup&gt;n&lt;/sup&gt;` | `$$\mathbb{R}^n$$` |
+| Element of | `&amp;isin;` | `$$\in$$` |
+| Arrow | `&amp;rarr;` | `$$\to$$` |
+| Times | `&amp;times;` | `$$\times$$` |
+| Sum | `&amp;sum;` | `$$\sum$$` |
+| Minus | `&amp;minus;` | `$$-$$` |
+| Middle dot | `&amp;middot;` | `$$\cdot$$` |
+| Script L | `&amp;#x2112;` | `$$\mathcal{L}$$` |
+
+Example — attention formula as HTML (renders in CLI export):
+```
+Attn(Q,K,V) = softmax(QK&lt;sup&gt;T&lt;/sup&gt;/&amp;radic;d&lt;sub&gt;k&lt;/sub&gt; + B)V
 ```
 
-- Inline LaTeX: `\(` ... `\)` delimiters
-- Display LaTeX: `$$` ... `$$` delimiters
-- HTML labels (`html=1`) and math coexist in the same cell value
-- Escape XML entities in LaTeX: `&lt;` for `<`, `&gt;` for `>`, `&amp;` for `&`
-- **VS Code caveat:** The VS Code draw.io extension has a known math rendering bug — formulas may appear as raw LaTeX in preview. Desktop app and CLI export render correctly.
+Do NOT set `math="1"` on the `<mxGraphModel>` element. It is unnecessary when using HTML entities and can cause rendering conflicts.
 
 ## Color Palette
 
@@ -48,10 +61,10 @@ rounded=1;whiteSpace=wrap;html=1;fillColor={FILL};strokeColor={STROKE};fontColor
 ### Node with formula and tensor shape
 
 ```xml
-<mxCell id="mha1" value="&lt;b&gt;Multi-Head Attention&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;$$\text{Attn}(Q,K,V)$$&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px;opacity:0.7&quot;&gt;(B, T, d) &amp;rarr; (B, T, d)&lt;/font&gt;"
+<mxCell id="mha1" value="&lt;b&gt;Multi-Head Attention&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;Attn(Q,K,V) = softmax(QK&lt;sup&gt;T&lt;/sup&gt;/&amp;radic;d&lt;sub&gt;k&lt;/sub&gt;)V&lt;/font&gt;&lt;br&gt;&lt;font style=&quot;font-size:9px;opacity:0.7&quot;&gt;(B, T, d) &amp;rarr; (B, T, d)&lt;/font&gt;"
   style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E91E63;strokeColor=#AD1457;fontColor=#ffffff;fontSize=12;arcSize=20;"
   vertex="1" parent="1">
-  <mxGeometry x="200" y="300" width="200" height="80" as="geometry"/>
+  <mxGeometry x="200" y="300" width="270" height="75" as="geometry"/>
 </mxCell>
 ```
 
@@ -157,15 +170,20 @@ Route on RIGHT side of nodes. Dashed, curved, using residual color.
 - All edges use `edgeStyle=orthogonalEdgeStyle;rounded=1;` unless explicitly diagonal
 - Add `endArrow=block;endFill=1;` for solid arrowheads
 - Spread residual waypoints 30px right of the rightmost node edge
+- **Labeled edges must have `html=1;`** in their style — otherwise HTML labels render as raw tags. Also add `labelBackgroundColor=#ffffff;` for readability against overlapping edges
+- **Avoid long diagonal arrows** (e.g. weight-tying arrows spanning the full diagram height). Instead, note the relationship in the node label text. Long arrows create visual clutter and often cross other elements
 
 ## Layout Guidelines
 
-- Node width: 200px standard, 280px for formula-heavy nodes
-- Node height: 35-40px compact, 60-80px standard, 80-100px with formula
-- Vertical gap between nodes: 20-30px within a layer
-- Horizontal gap between parallel paths: 80-100px
-- Container padding: 50-60px from each side
+- Node width: 200px for compact nodes, 270px for standard/formula nodes
+- Node height: 26-30px compact (LayerNorm, Dropout), 50-75px standard, 75+ with formula
+- Vertical gap between nodes: 15-20px within a block
+- Horizontal gap between parallel stacks (encoder/decoder): 250-350px
+- Container padding: 30-65px from edges for child nodes
+- Container width: 330-380px for single-column layouts with residual arrows
 - Align all coordinates to grid (multiples of 10)
+- Decoder blocks need ~100px more height than encoder blocks (3 sub-layers vs 2)
+- Add `html=1;` to swimlane containers when using `&times;` or other HTML entities in the header (e.g. "Block (&times;6)")
 
 ## Tensor Shape Annotations
 
@@ -203,3 +221,21 @@ When showing attention head detail, place Q/K/V projections as three parallel no
   <mxGeometry x="10" y="50" width="280" height="120" as="geometry"/>
 </mxCell>
 ```
+
+## Export and Verification Workflow
+
+After generating any NN computation graph, always export to PNG and visually inspect:
+
+```bash
+xvfb-run drawio --no-sandbox -x -f png -b 20 --scale 2 -o output.png input.drawio
+```
+
+Then read the PNG with the Read tool to check for:
+
+1. **Raw text where formulas should be** — if you see `$$..$$` as literal text, replace with HTML entities (see Formulas section above)
+2. **Raw HTML tags in edge labels** — add `html=1;` to the edge style
+3. **Overlapping edges/nodes** — increase container size or node spacing
+4. **Cramped text** — increase node width/height
+5. **Legend/info boxes overlapping the main diagram** — adjust y-coordinates
+
+Fix issues and re-export until the PNG looks clean. This render-inspect-fix loop typically takes 1-2 iterations.

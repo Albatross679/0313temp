@@ -1,0 +1,77 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath, amssymb}
+
+\begin{document}
+
+\begin{algorithm}[t]
+\caption{Bayesian Optimization}\label{alg:bo}
+\begin{algorithmic}[1]
+\Require Objective function $f: \mathcal{X} \to \mathbb{R}$ (expensive, black-box)
+\Require Search space $\mathcal{X} \subseteq \mathbb{R}^d$
+\Require Acquisition function $\alpha(\mathbf{x}; \mathcal{M})$ (e.g., EI, UCB, PI)
+\Require Number of initial points $n_0$, total budget $N$
+\Ensure Best observed input $\mathbf{x}^*$ and value $f^*$
+\State \textbf{Initialize:} Sample $\mathcal{D}_0 = \{(\mathbf{x}_i, y_i)\}_{i=1}^{n_0}$ via Latin hypercube or random
+\For{$t = n_0, n_0 + 1, \ldots, N - 1$}
+    \State Fit surrogate model $\mathcal{M}_t$ (e.g., GP) to $\mathcal{D}_t$
+        \Comment{Posterior: $p(f \mid \mathcal{D}_t)$}
+    \State Select next query point:
+        $\mathbf{x}_{t+1} \gets \arg\max_{\mathbf{x} \in \mathcal{X}} \alpha(\mathbf{x}; \mathcal{M}_t)$
+        \Comment{Optimize acquisition}
+    \State Evaluate objective: $y_{t+1} \gets f(\mathbf{x}_{t+1}) + \varepsilon$,
+        \quad $\varepsilon \sim \mathcal{N}(0, \sigma_n^2)$
+    \State Augment data: $\mathcal{D}_{t+1} \gets \mathcal{D}_t \cup \{(\mathbf{x}_{t+1}, y_{t+1})\}$
+\EndFor
+\State $\mathbf{x}^* \gets \arg\max_{(\mathbf{x}, y) \in \mathcal{D}_N} y$
+\State \textbf{return} $\mathbf{x}^*, f^*$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Expected Improvement (EI) Acquisition Function}\label{alg:ei}
+\begin{algorithmic}[1]
+\Require Surrogate model $\mathcal{M}$ with posterior mean $\mu(\mathbf{x})$ and variance $\sigma^2(\mathbf{x})$
+\Require Current best observation $f^+ = \max_{(\mathbf{x}, y) \in \mathcal{D}} y$
+\Require Exploration--exploitation trade-off $\xi \geq 0$
+\Function{ExpectedImprovement}{$\mathbf{x}$}
+    \State $\mu \gets \mu_{\mathcal{M}}(\mathbf{x})$, \quad $\sigma \gets \sigma_{\mathcal{M}}(\mathbf{x})$
+    \If{$\sigma = 0$}
+        \State \textbf{return} $0$ \Comment{No uncertainty $\Rightarrow$ no improvement expected}
+    \EndIf
+    \State $z \gets \dfrac{\mu - f^+ - \xi}{\sigma}$
+    \State \textbf{return} $(\mu - f^+ - \xi)\, \Phi(z) + \sigma\, \phi(z)$
+        \Comment{$\Phi$: CDF, $\phi$: PDF of $\mathcal{N}(0,1)$}
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Gaussian Process Surrogate Update}\label{alg:gp}
+\begin{algorithmic}[1]
+\Require Observations $\mathcal{D} = \{(\mathbf{x}_i, y_i)\}_{i=1}^n$
+\Require Kernel function $k(\mathbf{x}, \mathbf{x}')$ with hyperparameters $\boldsymbol{\theta}_k$
+\Require Noise variance $\sigma_n^2$
+\Function{GPPosterior}{$\mathbf{x}_*$}
+    \State $\mathbf{K} \gets [k(\mathbf{x}_i, \mathbf{x}_j)]_{i,j=1}^n + \sigma_n^2 \mathbf{I}$
+        \Comment{$n \times n$ covariance matrix}
+    \State $\mathbf{k}_* \gets [k(\mathbf{x}_*, \mathbf{x}_i)]_{i=1}^n$
+        \Comment{Cross-covariance vector}
+    \State $\mu(\mathbf{x}_*) \gets \mathbf{k}_*^\top \mathbf{K}^{-1} \mathbf{y}$
+        \Comment{Posterior mean}
+    \State $\sigma^2(\mathbf{x}_*) \gets k(\mathbf{x}_*, \mathbf{x}_*) - \mathbf{k}_*^\top \mathbf{K}^{-1} \mathbf{k}_*$
+        \Comment{Posterior variance}
+    \State \textbf{return} $\mu(\mathbf{x}_*)$, $\sigma^2(\mathbf{x}_*)$
+\EndFunction
+\Statex
+\Procedure{OptimizeHyperparameters}{$\mathcal{D}$}
+    \Comment{Optional: type-II MLE}
+    \State $\boldsymbol{\theta}_k^* \gets \arg\max_{\boldsymbol{\theta}_k} \log p(\mathbf{y} \mid \mathbf{X}, \boldsymbol{\theta}_k)$
+    \State $\log p(\mathbf{y} \mid \mathbf{X}, \boldsymbol{\theta}_k) = -\tfrac{1}{2} \mathbf{y}^\top \mathbf{K}^{-1} \mathbf{y} - \tfrac{1}{2} \log |\mathbf{K}| - \tfrac{n}{2} \log 2\pi$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\end{document}

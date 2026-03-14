@@ -1,7 +1,6 @@
 """Part 1 training: train loop, eval, test inference for T5 fine-tune."""
 
 import argparse
-import bisect
 import gc
 import os
 import re
@@ -520,10 +519,6 @@ def train_epoch(cfg, model, train_loader, optimizer, scheduler, device, global_s
     criterion = _make_criterion(cfg)
     use_amp = getattr(cfg, 'use_amp', False)
 
-    # Batch metric rank tracking (per-epoch running history)
-    loss_history = []
-    grad_norm_history = []
-
     for encoder_input, encoder_mask, decoder_input, decoder_targets, _ in tqdm(train_loader):
         optimizer.zero_grad()
         encoder_input = encoder_input.to(device)
@@ -551,20 +546,10 @@ def train_epoch(cfg, model, train_loader, optimizer, scheduler, device, global_s
         total_loss += loss.item() * num_tokens
         total_tokens += num_tokens
 
-        # Track rank of current batch metrics relative to epoch history
-        loss_val = loss.item()
-        bisect.insort(loss_history, loss_val)
-        loss_rank = loss_history.index(loss_val) / max(len(loss_history) - 1, 1)
-
-        bisect.insort(grad_norm_history, grad_norm)
-        grad_norm_rank = grad_norm_history.index(grad_norm) / max(len(grad_norm_history) - 1, 1)
-
         log_epoch_metrics({
             "batch/loss": loss.item(),
             "batch/gradient_norm": grad_norm,
             "batch/lr": optimizer.param_groups[0]["lr"],
-            "batch/loss_rank": loss_rank,
-            "batch/gradient_norm_rank": grad_norm_rank,
         }, step=global_step)
         global_step += 1
 

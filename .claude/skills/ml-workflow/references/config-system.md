@@ -49,7 +49,8 @@ Base                                    (core fields + all infrastructure)
 ```
 
 **Field references** (read on demand):
-- [sl_neural_fields.md](sl_neural_fields.md) — SL Neural + Regression + Classification fields, metrics contracts, task configs
+- [sl_neural_fields.md](sl_neural_fields.md) — SL Neural base + Regression + Classification fields, metrics contract
+- [sl_neural_tasks.md](sl_neural_tasks.md) — Task configs: LSTM, Transformer, CNN, Transformer Seq Clf, Transformer LM, T5 NL-to-SQL
 - [sl_tree_fields.md](sl_tree_fields.md) — SL Tree + Regression fields, metrics contract, framework param mapping, task configs
 - [rl_fields.md](rl_fields.md) — RL: Classic Control (PPO, SAC, DQN) + LLM Alignment (DPO, GRPO, CISPO), metrics, reward design, stability
 

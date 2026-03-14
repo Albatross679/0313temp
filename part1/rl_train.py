@@ -74,10 +74,23 @@ from utils import compute_metrics, save_queries_and_records, set_random_seeds
 _thread_local = threading.local()
 
 
+_DB_PATH = "data/flight_database.db"
+
+
 def _get_thread_conn():
-    """Get a thread-local in-memory SQLite connection for reward computation."""
+    """Get a thread-local in-memory SQLite connection for reward computation.
+
+    Each thread gets its OWN in-memory copy of the database to avoid
+    contention on set_progress_handler and SQLite's internal serialization
+    lock when multiple threads share a single connection.
+    """
     if not hasattr(_thread_local, 'conn'):
-        _thread_local.conn = _get_mem_conn()
+        import sqlite3
+        disk = sqlite3.connect(_DB_PATH)
+        mem = sqlite3.connect(":memory:", check_same_thread=False)
+        disk.backup(mem)
+        disk.close()
+        _thread_local.conn = mem
     return _thread_local.conn
 
 
@@ -149,11 +162,13 @@ def sample_group_completions(model, vocab, tokenizer, nl_texts, gold_sql_list,
     expanded_mask = attention_mask.repeat_interleave(G, dim=0)  # (B*G, T_enc)
 
     # Step 5: Generate completions with constrained decoding using cached encoder
+    #   Sub-batch generation: chunk B*G sequences into gen_batch_size pieces
+    #   to bound peak VRAM from KV cache allocation.
     max_gen_tokens = getattr(cfg, 'max_completion_length', None) or getattr(cfg, 'max_new_tokens', 256)
+    gen_bs = getattr(cfg, 'gen_batch_size', 16)
+    total_seqs = B * G
 
-    gen_kwargs = dict(
-        encoder_outputs=BaseModelOutput(last_hidden_state=expanded_encoder_hidden),
-        attention_mask=expanded_mask,
+    base_gen_kwargs = dict(
         do_sample=True,
         temperature=cfg.sampling_temperature,
         top_k=cfg.sampling_top_k,
@@ -163,10 +178,35 @@ def sample_group_completions(model, vocab, tokenizer, nl_texts, gold_sql_list,
         max_new_tokens=max_gen_tokens,
     )
     if getattr(cfg, 'top_p', None) is not None:
-        gen_kwargs['top_p'] = cfg.top_p
+        base_gen_kwargs['top_p'] = cfg.top_p
 
+    all_outputs = []
+    n_chunks = (total_seqs + gen_bs - 1) // gen_bs
+    print(f"  [gen] {total_seqs} seqs in {n_chunks} chunk(s) of {gen_bs}, max_tokens={max_gen_tokens}", flush=True)
     with torch.inference_mode(), _amp_context(cfg.use_amp, device):
-        outputs = gen_model.generate(**gen_kwargs)
+        for chunk_start in range(0, total_seqs, gen_bs):
+            chunk_end = min(chunk_start + gen_bs, total_seqs)
+            chunk_enc = expanded_encoder_hidden[chunk_start:chunk_end]
+            chunk_mask = expanded_mask[chunk_start:chunk_end]
+            chunk_kwargs = {
+                **base_gen_kwargs,
+                "encoder_outputs": BaseModelOutput(last_hidden_state=chunk_enc),
+                "attention_mask": chunk_mask,
+            }
+            chunk_out = gen_model.generate(**chunk_kwargs)
+            all_outputs.append(chunk_out)
+            print(f"  [gen] chunk {chunk_start//gen_bs + 1}/{n_chunks} done: {chunk_out.shape}", flush=True)
+
+    # Pad sub-batch outputs to same length and concatenate
+    max_len = max(o.shape[1] for o in all_outputs)
+    padded = []
+    for o in all_outputs:
+        if o.shape[1] < max_len:
+            pad = torch.zeros(o.shape[0], max_len - o.shape[1],
+                              dtype=o.dtype, device=o.device)
+            o = torch.cat([o, pad], dim=1)
+        padded.append(o)
+    outputs = torch.cat(padded, dim=0)  # (B*G, T_gen)
 
     generated_ids = outputs  # (B*G, T_gen)
 
@@ -299,6 +339,8 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
     use_per_token = (cfg.rl_algorithm == "cispo")
     is_ppo = (cfg.rl_algorithm == "ppo")
 
+    _step_t0 = time.time()
+
     # ── SAMPLE PHASE (with encoder caching) ──
     policy_model.eval()  # generation mode
     (completions, rewards, generated_ids,
@@ -308,6 +350,7 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
         batch_gold_records, mem_conn, cfg, device,
     )
     policy_model.train()  # back to training mode
+    _sample_t = time.time() - _step_t0
 
     # ── ADVANTAGE PHASE ──
     if is_ppo and value_head is not None and getattr(cfg, 'advantage_type', 'learned') in ('learned', 'hybrid'):
@@ -357,6 +400,8 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
         # Expand to (B*G,)
         dead_mask_expanded = dead_mask.repeat_interleave(G)
         advantages = advantages * (~dead_mask_expanded).float()
+
+    _adv_t = time.time() - _step_t0 - _sample_t
 
     # ── PREPARE ENCODER INPUTS for log prob computation ──
     # Use cached encoder hidden states from sample_group_completions
@@ -552,6 +597,13 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
     metrics["kl_penalty"] = metrics["kl_divergence"]
     metrics["grad_norm"] = metrics["gradient_norm"]
 
+    _total_t = time.time() - _step_t0
+    _update_t = _total_t - _sample_t - _adv_t
+    metrics["_timing/sample"] = _sample_t
+    metrics["_timing/advantage"] = _adv_t
+    metrics["_timing/update"] = _update_t
+    metrics["_timing/total"] = _total_t
+
     return metrics, grad_norm_ema
 
 
@@ -599,6 +651,14 @@ def grpo_train(cfg, policy_model, train_nl, train_sql, train_gold_records,
     grad_norm_ema = 0.0
 
     num_train = len(train_nl)
+    # RL training subsample: use a random subset per epoch for speed
+    subset_size = getattr(cfg, 'train_subset_size', 0)
+    if subset_size > 0 and subset_size < num_train:
+        effective_train = subset_size
+        print(f"RL training: subsampling {subset_size}/{num_train} queries per epoch")
+    else:
+        effective_train = num_train
+        print(f"RL training: using full {num_train} queries per epoch")
 
     for epoch in range(cfg.num_epochs):
         epoch_start = time.time()
@@ -607,16 +667,19 @@ def grpo_train(cfg, policy_model, train_nl, train_sql, train_gold_records,
             value_head.train()
 
         # Shuffle training data indices each epoch (on-policy: fresh samples)
-        indices = torch.randperm(num_train).tolist()
+        all_indices = torch.randperm(num_train).tolist()
+        indices = all_indices[:effective_train]  # subsample if configured
 
         # Epoch accumulators (using full metrics contract keys)
         epoch_accum = {}
         epoch_grad_spikes = 0
         num_batches = 0
+        n_total_batches = (effective_train + cfg.batch_size - 1) // cfg.batch_size
+        print(f"[Epoch {epoch}] starting {n_total_batches} batches...", flush=True)
 
         # ── Mini-batch loop ──
-        for batch_start in range(0, num_train, cfg.batch_size):
-            batch_end = min(batch_start + cfg.batch_size, num_train)
+        for batch_start in range(0, effective_train, cfg.batch_size):
+            batch_end = min(batch_start + cfg.batch_size, effective_train)
             batch_indices = indices[batch_start:batch_end]
 
             batch_nl = [train_nl[i] for i in batch_indices]
@@ -629,6 +692,16 @@ def grpo_train(cfg, policy_model, train_nl, train_sql, train_gold_records,
                 grad_norm_ema, global_step,
                 value_head=value_head, value_optimizer=value_optimizer,
             )
+
+            # Log batch timing
+            if num_batches < 5 or num_batches % 25 == 0:
+                _t = metrics.get("_timing/total", 0)
+                _ts = metrics.get("_timing/sample", 0)
+                _tu = metrics.get("_timing/update", 0)
+                print(f"  batch {num_batches+1}/{n_total_batches}: "
+                      f"total={_t:.1f}s sample={_ts:.1f}s update={_tu:.1f}s "
+                      f"reward={metrics.get('reward/mean', 0):.2f} "
+                      f"loss={metrics.get('loss', 0):.4f}", flush=True)
 
             # Accumulate epoch metrics
             for key in ("loss", "mean_reward", "zero_std_frac", "clip_frac",
@@ -1036,6 +1109,10 @@ def parse_args():
                         help="Total wall clock budget across all configs (hours)")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--name", type=str, default=None)
+    parser.add_argument("--train_subset_size", type=int, default=None,
+                        help="Subsample N training queries per epoch (0=all)")
+    parser.add_argument("--gen_batch_size", type=int, default=None,
+                        help="Max sequences per generate() call (bounds peak VRAM)")
     return parser.parse_args()
 
 
@@ -1043,7 +1120,8 @@ def apply_cli_overrides(cfg, args):
     """Apply non-None CLI args to config."""
     for attr in ("rl_algorithm", "group_size", "epsilon", "epsilon_high",
                  "kl_beta", "learning_rate", "num_epochs", "batch_size",
-                 "patience_epochs", "base_checkpoint_path", "seed", "name"):
+                 "patience_epochs", "base_checkpoint_path", "seed", "name",
+                 "train_subset_size", "gen_batch_size"):
         val = getattr(args, attr, None)
         if val is not None:
             setattr(cfg, attr, val)

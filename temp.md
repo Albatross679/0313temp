@@ -28,7 +28,9 @@ Is it possible that we can split each field in the areas of examples columns int
 
 So I think I want the three indicators and the actual contents to be in different columns. NL,GT, pred are in a different column from their content 
 
-In the first row, why is there a huge space gap between the natural language and the ground truth? 
+In the first row, why is there a huge space gap between the natural language and the ground truth?
+
+when the trial 2 is done, let's move onto GRPO and CISCO in phase 5. 
 
 --
 # prompts
@@ -45,10 +47,6 @@ also include in the plan that the executor must adjust batch size in order to ma
 loop: 20mins when the train has been launched, check on the training status, make sure it is running healthily. solve and document any issues you encounter.
 
 
-/loop 10 minutes check the below to-do list:
-- check on the training status, making sure it is running healthy
-- if any errors or issues (training is not running healthy) show up, investigate and fix it
-- document the issue we encounter
 
 check on the approval points
 

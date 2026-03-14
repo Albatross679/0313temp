@@ -31,13 +31,16 @@ class T5GRPOConfig(T5FineTuneConfig):
     schema_mode: str = "tables"
     learning_rate: float = 5e-6
     num_epochs: int = 9999                          # early stopping is binding
-    batch_size: int = 8                              # queries per batch (generates G*B completions)
-    patience_epochs: int = 5
+    batch_size: int = 4                              # queries per batch (generates G*B completions)
+    patience_epochs: int = 3                         # fewer patience for RL (each epoch is expensive)
     eval_every_n_epochs: int = 1
     eval_subset_size: int = 0                        # full dev set every epoch
     num_beams: int = 4
     grad_clip_norm: float = 1.0
     max_wall_clock_hours: Optional[float] = None     # no per-config cap; --max_hours at sweep level
+
+    # ---- Training data subsampling ----
+    train_subset_size: int = 200                     # subsample training queries per epoch for RL speed; 0 = use all
 
     # ---- LoRA (wider adapter per user decision) ----
     use_lora: bool = True
@@ -52,13 +55,14 @@ class T5GRPOConfig(T5FineTuneConfig):
 
     # ---- RL algorithm selection ----
     rl_algorithm: str = "grpo"                       # "grpo", "cispo", or "ppo"
-    group_size: int = 8                              # G completions per query
-    sampling_temperature: float = 1.0                # temperature for group generation
+    group_size: int = 4                              # G completions per query (reduced from 8 for speed)
+    sampling_temperature: float = 0.7                # temperature for group generation (1.0 makes >85% SQL fail)
     sampling_top_k: int = 50                         # top-k for group generation
 
     # ---- Generation ----
     top_p: Optional[float] = None                    # nucleus sampling (None = disabled)
-    max_completion_length: int = 256                 # max tokens per completion
+    max_completion_length: int = 512                 # max tokens per completion (median gold SQL is 199 tokens, p99=492)
+    gen_batch_size: int = 16                         # max sequences per generate() call (bounds peak VRAM)
 
     # ---- Loss hyperparameters ----
     epsilon: float = 0.2                             # symmetric clipping (GRPO)

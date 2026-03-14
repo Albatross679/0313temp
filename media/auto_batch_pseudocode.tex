@@ -1,0 +1,79 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.9in]{geometry}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath, amssymb}
+
+\begin{document}
+
+\begin{algorithm}[t]
+\caption{Auto Batch Size (VRAM-Maximizing Binary Search)}\label{alg:autobatch}
+\begin{algorithmic}[1]
+\Require Model $f_{\boldsymbol{\theta}}$ (loaded on GPU), training data loader $\mathcal{D}$
+\Require Default batch size $B_0$, target VRAM utilization $\rho$ (e.g., $0.85$)
+\Require Maximum batch size cap $B_{\max}$ (e.g., $256$)
+\Ensure Largest batch size $B^*$ that fits in GPU memory at $\leq \rho$ utilization
+\Statex \textit{Notation:} $V_{\text{total}}$=total GPU VRAM,
+    $V_{\text{used}}$=VRAM after forward+backward,
+    $L_{\text{enc}}, L_{\text{dec}}$=sequence lengths
+\Statex
+\Statex \hspace{\algorithmicindent}\textit{// Step 1: Measure available VRAM and determine sequence lengths}
+\State $V_{\text{total}} \gets \textsc{GetDeviceMemory}()$
+    \Comment{Total GPU memory in bytes}
+\State $V_{\text{target}} \gets V_{\text{total}} \cdot \rho$
+    \Comment{Target usage threshold}
+\State $(L_{\text{enc}}, L_{\text{dec}}) \gets \textsc{PeekBatch}(\mathcal{D})$
+    \Comment{Sample one batch for sequence dimensions}
+\Statex
+\Statex \hspace{\algorithmicindent}\textit{// Step 2: Build candidate list (powers of 2 from $B_0$)}
+\State $B^* \gets B_0$
+    \Comment{Fallback: use default if all probes fail}
+\State $\texttt{candidates} \gets [B_0]$
+\State $B \gets 2 \cdot B_0$
+\While{$B \leq B_{\max}$}
+    \State Append $B$ to $\texttt{candidates}$
+    \State $B \gets 2 \cdot B$
+\EndWhile
+\Statex
+\Statex \hspace{\algorithmicindent}\textit{// Step 3: Probe each candidate with synthetic forward+backward}
+\For{$B$ in $\texttt{candidates}$}
+    \State $\textsc{CleanupVRAM}()$
+        \Comment{Free cache, run garbage collection}
+    \State $\mathbf{X}_{\text{enc}} \gets \textsc{RandInt}(B \times L_{\text{enc}})$
+        \Comment{Synthetic encoder input on GPU}
+    \State $\mathbf{X}_{\text{dec}} \gets \textsc{RandInt}(B \times L_{\text{dec}})$
+        \Comment{Synthetic decoder input on GPU}
+    \State $\mathbf{Y} \gets \textsc{RandInt}(B \times L_{\text{dec}})$
+        \Comment{Synthetic targets on GPU}
+    \State \textbf{try:}
+    \State \hspace{\algorithmicindent} $\hat{\mathbf{Y}} \gets f_{\boldsymbol{\theta}}(\mathbf{X}_{\text{enc}}, \mathbf{X}_{\text{dec}})$
+        \Comment{Forward pass (with AMP if enabled)}
+    \State \hspace{\algorithmicindent} $\mathcal{L} \gets \textsc{CrossEntropy}(\hat{\mathbf{Y}}, \mathbf{Y})$
+    \State \hspace{\algorithmicindent} $\textsc{Backward}(\mathcal{L})$
+        \Comment{Backward pass allocates optimizer-sized buffers}
+    \State \hspace{\algorithmicindent} $V_{\text{used}} \gets \textsc{MemoryAllocated}()$
+        \Comment{Peak VRAM after both passes}
+    \State \hspace{\algorithmicindent} Free $\mathbf{X}_{\text{enc}}, \mathbf{X}_{\text{dec}}, \mathbf{Y}, \mathcal{L}$;
+        $\textsc{CleanupVRAM}()$
+    \State \hspace{\algorithmicindent} \textbf{if} $V_{\text{used}} < V_{\text{target}}$ \textbf{then}
+    \State \hspace{\algorithmicindent}\hspace{\algorithmicindent} $B^* \gets B$
+        \Comment{Fits: accept this batch size}
+    \State \hspace{\algorithmicindent} \textbf{else}
+    \State \hspace{\algorithmicindent}\hspace{\algorithmicindent} \textbf{break}
+        \Comment{Exceeds target: stop searching}
+    \State \hspace{\algorithmicindent} \textbf{end if}
+    \State \textbf{catch} OOM:
+    \State \hspace{\algorithmicindent} Free tensors; $\textsc{CleanupVRAM}()$;
+        \textbf{break}
+        \Comment{Hard OOM: use previous $B^*$}
+\EndFor
+\Statex
+\Statex \hspace{\algorithmicindent}\textit{// Step 4: Clean up probe artifacts}
+\State $f_{\boldsymbol{\theta}}.\textsc{ZeroGrad}()$
+    \Comment{Clear gradients accumulated during probing}
+\State $\textsc{CleanupVRAM}()$
+\State \textbf{return} $B^*$
+\end{algorithmic}
+\end{algorithm}
+
+\end{document}

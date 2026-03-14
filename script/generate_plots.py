@@ -87,7 +87,7 @@ def plot_icl_sensitivity():
     ax.set_ylabel('Record F1 (%)')
     ax.set_xticks([0, 1, 2, 3])
     ax.set_ylim(10, 20)
-    ax.legend(loc='lower right', framealpha=0.9)
+    ax.legend(loc='upper left', framealpha=0.9)
     ax.set_title('ICL sensitivity to $k$ (Gemma 2B, dev set)')
 
     fig.tight_layout()
@@ -237,10 +237,10 @@ def plot_dev_f1_comparison():
     ax.set_yticklabels(labels, fontsize=7.5)
     ax.invert_yaxis()
     ax.set_xlabel('Record F1 (%)')
-    ax.set_xlim(0, 90)
+    ax.set_xlim(0, 95)
     ax.set_title('T5-small dev F1 across all variants')
 
-    # Legend patches
+    # Legend patches — place upper right so it doesn't cover bars
     from matplotlib.patches import Patch
     legend_elements = [
         Patch(facecolor='#6baed6', label='Full fine-tune'),
@@ -248,9 +248,11 @@ def plot_dev_f1_comparison():
         Patch(facecolor='#a1d99b', label='MLP head'),
         Patch(facecolor='#4daf4a', label='From scratch'),
     ]
-    ax.legend(handles=legend_elements, loc='lower right', fontsize=7, framealpha=0.9)
+    ax.legend(handles=legend_elements, loc='upper center', fontsize=7, framealpha=0.9,
+              bbox_to_anchor=(0.5, -0.15), ncol=4)
 
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.18)
     path = os.path.join(MEDIA_DIR, 'dev_f1_comparison.pdf')
     fig.savefig(path)
     print(f'Saved: {path}')

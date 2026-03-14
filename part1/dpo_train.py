@@ -143,8 +143,9 @@ def dpo_auto_batch_size(cfg, policy_model, ref_model, dpo_dataset,
                         device, target_vram_pct=0.85):
     """Find the largest DPO batch size that fits in GPU VRAM.
 
-    Probes with a real DPO forward+backward pass (4 restricted_forward calls
-    for full-FT, or 4 with adapter toggling for LoRA) at increasing batch sizes.
+    Strategy: binary search between powers-of-2 coarse scan, then fine-tune.
+    Uses max_memory_allocated (peak) with a 15% safety margin (target=0.85)
+    to account for variable-length batches and runtime overhead.
 
     Args:
         cfg: T5DPOConfig instance
@@ -166,22 +167,33 @@ def dpo_auto_batch_size(cfg, policy_model, ref_model, dpo_dataset,
     use_amp = getattr(cfg, "use_amp", True)
     best_bs = cfg.batch_size
 
-    # Candidate batch sizes: current, then double until 256
-    candidates = [cfg.batch_size]
+    # Phase 1: coarse scan with powers of 2 to find ceiling
+    coarse = [cfg.batch_size]
     bs = cfg.batch_size * 2
     while bs <= 256:
-        candidates.append(bs)
+        coarse.append(bs)
         bs *= 2
+    candidates = coarse
+
+    # Find the longest samples to build a worst-case probe batch.
+    # Activation memory scales with sequence length, so probing with
+    # the longest sequences prevents OOM on worst-case batches during training.
+    sample_lens = [
+        len(dpo_dataset.chosen[i]) + len(dpo_dataset.rejected[i])
+        for i in range(len(dpo_dataset))
+    ]
+    longest_indices = sorted(range(len(sample_lens)),
+                             key=lambda i: sample_lens[i], reverse=True)
 
     for bs in candidates:
         try:
             cleanup_vram()
-            # Build a probe loader with this batch size
-            probe_loader = DataLoader(
-                dpo_dataset, batch_size=bs,
-                shuffle=False, collate_fn=dpo_collate_fn,
-            )
-            batch = next(iter(probe_loader))
+            torch.cuda.reset_peak_memory_stats()
+
+            # Build a worst-case batch from the longest samples
+            worst_case_samples = [dpo_dataset[longest_indices[i]]
+                                  for i in range(min(bs, len(longest_indices)))]
+            batch = dpo_collate_fn(worst_case_samples)
 
             # Run actual DPO train step (forward + backward + optimizer step)
             probe_opt = torch.optim.AdamW(
@@ -201,11 +213,12 @@ def dpo_auto_batch_size(cfg, policy_model, ref_model, dpo_dataset,
                     device=device, use_amp=use_amp,
                 )
 
-            used = torch.cuda.memory_allocated()
-            del probe_loader, batch, probe_opt
+            # Use PEAK memory, not current — peak captures intermediate activations
+            peak = torch.cuda.max_memory_allocated()
+            del batch, probe_opt
             cleanup_vram()
 
-            if used < target_bytes:
+            if peak < target_bytes:
                 best_bs = bs
             else:
                 break
@@ -213,6 +226,48 @@ def dpo_auto_batch_size(cfg, policy_model, ref_model, dpo_dataset,
             # OOM — use previous best
             cleanup_vram()
             break
+
+    # Phase 2: fine-tune between best_bs and the next power-of-2 that failed
+    if best_bs < coarse[-1]:
+        failed_bs = best_bs * 2
+        # Try midpoints: best_bs + step, stepping by batch_size increments
+        step = max(cfg.batch_size, 4)
+        fine_bs = best_bs + step
+        while fine_bs < failed_bs:
+            try:
+                cleanup_vram()
+                torch.cuda.reset_peak_memory_stats()
+                worst_case_samples = [dpo_dataset[longest_indices[i]]
+                                      for i in range(min(fine_bs, len(longest_indices)))]
+                batch = dpo_collate_fn(worst_case_samples)
+                probe_opt = torch.optim.AdamW(
+                    [p for p in policy_model.parameters() if p.requires_grad],
+                    lr=1e-6,
+                )
+                if use_lora:
+                    dpo_train_step_lora(
+                        policy_model, batch, probe_opt,
+                        beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
+                        device=device, use_amp=use_amp,
+                    )
+                else:
+                    dpo_train_step(
+                        policy_model, ref_model, batch, probe_opt,
+                        beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
+                        device=device, use_amp=use_amp,
+                    )
+                peak = torch.cuda.max_memory_allocated()
+                del batch, probe_opt
+                cleanup_vram()
+
+                if peak < target_bytes:
+                    best_bs = fine_bs
+                else:
+                    break
+            except RuntimeError:
+                cleanup_vram()
+                break
+            fine_bs += step
 
     # Clean up probe state
     policy_model.zero_grad(set_to_none=True)

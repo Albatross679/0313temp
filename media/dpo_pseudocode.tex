@@ -1,0 +1,115 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.9in]{geometry}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath, amssymb}
+
+\begin{document}
+
+%% ============================================================
+%% Algorithm 1: DPO Training
+%% ============================================================
+\begin{algorithm}[t]
+\caption{DPO (Direct Preference Optimization)}\label{alg:dpo}
+\begin{algorithmic}[1]
+\Require Policy model $\pi_{\boldsymbol{\theta}}$ (initialized from SFT checkpoint)
+\Require Reference model $\pi_{\text{ref}}$ (frozen copy of $\pi_{\boldsymbol{\theta}}$ at initialization)
+\Require Preference dataset $\mathcal{D} = \{(\mathbf{q}_i, \mathbf{o}_i^w, \mathbf{o}_i^l)\}_{i=1}^N$
+    (query, chosen, rejected)
+\Require Temperature $\beta > 0$ (controls divergence from $\pi_{\text{ref}}$; lower = more deviation)
+\Require Learning rate $\alpha$, gradient clip norm $c$, patience $P$ (early stopping epochs)
+\Ensure Aligned policy $\pi_{\boldsymbol{\theta}}$
+\Statex \textit{Notation:} $\mathbf{q}$=input query, $\mathbf{o}^w$=chosen (preferred) completion,
+    $\mathbf{o}^l$=rejected completion,
+\Statex \hspace{\algorithmicindent}$\log \pi(\mathbf{o} \mid \mathbf{q}) = \sum_t \log \pi(o_t \mid \mathbf{q}, \mathbf{o}_{<t})$ (sequence-level log prob)
+\Statex
+\Statex \hspace{\algorithmicindent}\textit{// KEY INSIGHT: No generation during training. Learns directly from}
+\Statex \hspace{\algorithmicindent}\textit{// pre-collected preference pairs, unlike GRPO/CISPO which sample online.}
+\State $\text{best\_metric} \gets -\infty$; $\text{wait} \gets 0$
+\For{epoch $= 1, 2, \ldots$}
+    \For{each minibatch $\mathcal{B} \subset \mathcal{D}$}
+        \Statex \hspace{\algorithmicindent}\hspace{\algorithmicindent}\textit{// Step 1: Compute policy log probs (with gradients)}
+        \State $\log \pi_{\boldsymbol{\theta}}(\mathbf{o}^w \mid \mathbf{q}) \gets \Call{SeqLogProb}{\pi_{\boldsymbol{\theta}}, \mathbf{q}, \mathbf{o}^w}$
+            \Comment{Chosen under policy}
+        \State $\log \pi_{\boldsymbol{\theta}}(\mathbf{o}^l \mid \mathbf{q}) \gets \Call{SeqLogProb}{\pi_{\boldsymbol{\theta}}, \mathbf{q}, \mathbf{o}^l}$
+            \Comment{Rejected under policy}
+        \Statex \hspace{\algorithmicindent}\hspace{\algorithmicindent}\textit{// Step 2: Compute reference log probs (no gradients, frozen)}
+        \State $\log \pi_{\text{ref}}(\mathbf{o}^w \mid \mathbf{q}) \gets \Call{SeqLogProb}{\pi_{\text{ref}}, \mathbf{q}, \mathbf{o}^w}$
+            \Comment{Chosen under reference}
+        \State $\log \pi_{\text{ref}}(\mathbf{o}^l \mid \mathbf{q}) \gets \Call{SeqLogProb}{\pi_{\text{ref}}, \mathbf{q}, \mathbf{o}^l}$
+            \Comment{Rejected under reference}
+        \Statex \hspace{\algorithmicindent}\hspace{\algorithmicindent}\textit{// Step 3: Compute implicit rewards and DPO loss}
+        \State $r^w \gets \beta \big(\log \pi_{\boldsymbol{\theta}}(\mathbf{o}^w \mid \mathbf{q}) - \log \pi_{\text{ref}}(\mathbf{o}^w \mid \mathbf{q})\big)$
+            \Comment{Implicit reward for chosen}
+        \State $r^l \gets \beta \big(\log \pi_{\boldsymbol{\theta}}(\mathbf{o}^l \mid \mathbf{q}) - \log \pi_{\text{ref}}(\mathbf{o}^l \mid \mathbf{q})\big)$
+            \Comment{Implicit reward for rejected}
+        \State $L^{\text{DPO}} \gets -\dfrac{1}{|\mathcal{B}|} \displaystyle\sum_{(\mathbf{q}, \mathbf{o}^w, \mathbf{o}^l) \in \mathcal{B}} \log \sigma\!\big(r^w - r^l\big)$
+            \Comment{$\sigma$: sigmoid function}
+        \Statex \hspace{\algorithmicindent}\hspace{\algorithmicindent}\textit{// Step 4: Gradient update with clipping}
+        \State $\mathbf{g} \gets \nabla_{\boldsymbol{\theta}} L^{\text{DPO}}$
+            \Comment{Compute gradients via backprop}
+        \State $\mathbf{g} \gets \mathbf{g} \cdot \min\!\big(1,\; c \,/\, \|\mathbf{g}\|\big)$
+            \Comment{Clip gradient norm to $\leq c$ (prevents instability)}
+        \State $\boldsymbol{\theta} \gets \boldsymbol{\theta} - \alpha\, \mathbf{g}$
+    \EndFor
+    \Statex \hspace{\algorithmicindent}\textit{// Early stopping on validation metric}
+    \State Evaluate on dev set; \textbf{if} metric improves: $\text{best\_metric} \gets \text{metric}$, $\text{wait} \gets 0$
+    \State \textbf{else:} $\text{wait} \gets \text{wait} + 1$;
+        \textbf{if} $\text{wait} \geq P$ \textbf{then break}
+\EndFor
+\State \textbf{return} $\pi_{\boldsymbol{\theta}}$
+\end{algorithmic}
+\end{algorithm}
+
+%% ============================================================
+%% Algorithm 2: SeqLogProb subroutine
+%% ============================================================
+\begin{algorithm}[t]
+\caption{SeqLogProb: Sequence-Level Log Probability (Encoder-Decoder)}\label{alg:seqlogprob}
+\begin{algorithmic}[1]
+\Require Model $\pi$ (T5 encoder-decoder), query tokens $\mathbf{q}$, completion tokens $\mathbf{o} = (o_1, \ldots, o_T)$
+\Ensure $\log \pi(\mathbf{o} \mid \mathbf{q}) = \sum_{t=1}^{T} \log \pi(o_t \mid \mathbf{q}, \mathbf{o}_{<t})$
+\Statex \textit{Notation:} teacher forcing --- all target tokens provided as decoder input (no generation)
+\State $\mathbf{h} \gets \textsc{Encoder}(\mathbf{q})$
+    \Comment{Encode query once}
+\State $\text{dec\_input} \gets [\texttt{BOS}, o_1, \ldots, o_{T-1}]$
+    \Comment{Right-shifted targets}
+\State $\text{logits} \gets \textsc{Decoder}(\text{dec\_input}, \mathbf{h})$
+    \Comment{$(T, |V|)$ logits over vocabulary}
+\State $\text{log\_probs} \gets \textsc{LogSoftmax}(\text{logits})$
+    \Comment{$(T, |V|)$ log probabilities}
+\For{$t = 1, \ldots, T$}
+    \State $\ell_t \gets \text{log\_probs}[t,\; o_t]$
+        \Comment{Gather log prob at target token position}
+\EndFor
+\State $\text{mask} \gets (o_t \neq \texttt{PAD})$ for $t = 1, \ldots, T$
+    \Comment{Ignore padding tokens}
+\State \textbf{return} $\sum_{t=1}^{T} \ell_t \cdot \text{mask}_t$
+    \Comment{Sum of per-token log probs}
+\end{algorithmic}
+\end{algorithm}
+
+%% ============================================================
+%% Algorithm 3: DPO Loss derivation box
+%% ============================================================
+\begin{algorithm}[t]
+\caption{DPO Loss: From Reward Model to Closed-Form Objective}\label{alg:dpo-deriv}
+\begin{algorithmic}[0]
+\Statex \textbf{Bradley-Terry preference model:}
+\Statex \hspace{\algorithmicindent} $p(\mathbf{o}^w \succ \mathbf{o}^l \mid \mathbf{q}) = \sigma\!\big(r(\mathbf{q}, \mathbf{o}^w) - r(\mathbf{q}, \mathbf{o}^l)\big)$
+\Statex \hspace{\algorithmicindent} \textit{Probability that $\mathbf{o}^w$ is preferred over $\mathbf{o}^l$ depends on reward difference.}
+\Statex
+\Statex \textbf{DPO insight} \textit{(Rafailov et al., 2023):}
+\Statex \hspace{\algorithmicindent} The optimal reward under KL-constrained RL has closed form:
+\Statex \hspace{\algorithmicindent} $r^*(\mathbf{q}, \mathbf{o}) = \beta \log \dfrac{\pi_{\boldsymbol{\theta}}(\mathbf{o} \mid \mathbf{q})}{\pi_{\text{ref}}(\mathbf{o} \mid \mathbf{q})} + \beta \log Z(\mathbf{q})$
+\Statex \hspace{\algorithmicindent} \textit{The partition function $Z(\mathbf{q})$ cancels in the preference difference:}
+\Statex
+\Statex \textbf{Resulting loss:}
+\Statex \hspace{\algorithmicindent} $L^{\text{DPO}} = -\mathbb{E}_{(\mathbf{q}, \mathbf{o}^w, \mathbf{o}^l) \sim \mathcal{D}}\! \left[\log \sigma\!\left(\beta \log \dfrac{\pi_{\boldsymbol{\theta}}(\mathbf{o}^w \mid \mathbf{q})}{\pi_{\text{ref}}(\mathbf{o}^w \mid \mathbf{q})} - \beta \log \dfrac{\pi_{\boldsymbol{\theta}}(\mathbf{o}^l \mid \mathbf{q})}{\pi_{\text{ref}}(\mathbf{o}^l \mid \mathbf{q})}\right)\right]$
+\Statex
+\Statex \hspace{\algorithmicindent} \textit{No reward model needed. No generation during training.}
+\Statex \hspace{\algorithmicindent} \textit{Only requires: forward passes on pre-collected preference pairs.}
+\end{algorithmic}
+\end{algorithm}
+
+\end{document}

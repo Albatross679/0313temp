@@ -278,6 +278,8 @@ Decoder token vocab size & 556 (598 restricted) & 396 (598 restricted) \\
 
 \section{T5 Fine-tuning and Training From Scratch (8pt)}\label{sec:t5}
 
+\subsection{Supervised Fine-tuning (SFT)}\label{sec:t5:sft}
+
 \autoref{tab:t5_design} describes the data processing, tokenization, architecture, and hyperparameters for the fine-tuned and from-scratch T5 models.
 
 \begin{table}[h!]
@@ -303,7 +305,29 @@ Constant parameters & Optimizer, scheduler, gradient clipping, loss function, be
 
 \newpage
 
+\subsection{Direct Preference Optimization (DPO)}\label{sec:dpo}
 
+\autoref{tab:dpo_design} describes the DPO post-training pipeline applied on top of the best SFT model: the T5-base ``Base sweep best'' checkpoint (\texttt{google-t5/t5-base}, 222M params; see \autoref{tab:results_t5_base}, F1\,=\,85.96\%, SQL EM\,=\,73.39\%). DPO \textit{(Rafailov et al., 2023)} optimizes the policy to prefer ``chosen'' over ``rejected'' completions without training a separate reward model, using the SFT checkpoint as both initialization and frozen reference. Results are reported in Section~\ref{sec:results}.
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabular}{p{3cm}p{10.5cm}}
+\toprule
+Design choice & Description \\
+\midrule
+Base model & T5-base ``Base sweep best'' (222M params, full fine-tune, restricted vocab, schema augmentation, LR\,=\,6.19e-5, label smoothing\,=\,0.15). Used as both policy initialization and frozen reference. \\
+Preference data & 9{,}801 triplets (NL, chosen SQL, rejected SQL). \textbf{Phase A:} model-generated negatives --- up to 10 candidates per query via diverse beam search, classified by execution correctness against \texttt{flight\_database.db}. \textbf{Phase B:} execution-aware perturbations of gold SQL (city swaps, date changes, operator flips), verified to produce different record sets. In-memory SQLite for fast evaluation (46K+ queries in $\sim$20 min). \\
+Loss & $\mathcal{L}_\text{DPO} = -\log\sigma(\beta\,[\log\pi_\theta(y_w|x) - \log\pi_\text{ref}(y_w|x) - \log\pi_\theta(y_l|x) + \log\pi_\text{ref}(y_l|x)])$. Log probs computed via restricted SQL vocab (598 tokens); OOV tokens masked to zero. \\
+Varying parameters & $\beta \in \{0.05, 0.1, 0.2, 0.3, 0.5\}$, LR $\in [10^{-7}, 5\times10^{-5}]$, weight decay, gradient clipping, architecture (full fine-tune vs.\ LoRA $r$=16 on q/v or q/k/v/o). W\&B random sweep. \\
+Constant parameters & Optimizer (AdamW), beam search decoding (num\_beams\,=\,4), restricted decoder vocabulary, schema augmentation, eval every epoch, patience\,=\,5 eval cycles. \\
+\bottomrule
+\end{tabular}
+\caption{Design choices for DPO post-training on T5-base.}
+\label{tab:dpo_design}
+\end{table}
+
+\newpage
 
 \section{Large Language Model (LLM) Prompting (14pt)}\label{sec:llm}
 
@@ -438,7 +462,7 @@ When reporting your results in \autoref{tab:results_llm}, you will need to refer
 
 
 
-\section{Results and Analysis (20pt)}
+\section{Results and Analysis (20pt)}\label{sec:results}
 
 \paragraph{Quantitative Results:} Use \autoref{tab:results_t5_small}, \autoref{tab:results_t5_base}, and \autoref{tab:results_llm} to report your test and development set results.
 Your test results should match with the results on gradescope.
@@ -505,8 +529,8 @@ SQL evaluation threads & 128 \\
   \midrule
   \multicolumn{13}{l}{\textbf{Test Results}} \\
   \midrule
-  T5 fine-tuning          & Full & 60.5 & 3e-4 & 64  & \checkmark & 0.1 & 0.01 & 4 & 79  & --   & XX.XX & XX.XX \\
-  T5 from scratch         & Full & 60.5 & 3e-4 & 32  & --         & 0.1 & 0.01 & 4 & 98  & --   & XX.XX & XX.XX \\
+  T5 fine-tuning          & Full & 60.5 & 3e-4 & 64  & \checkmark & 0.1 & 0.01 & 4 & 79  & --   & 0.00 & 55.25 \\
+  T5 from scratch         & Full & 60.5 & 3e-4 & 32  & --         & 0.1 & 0.01 & 4 & 98  & --   & 0.00 & 59.16 \\
   \bottomrule
 \end{tabular}%
 }% end makebox
@@ -562,6 +586,39 @@ SQL evaluation threads & 128 \\
 \end{figure}
 
 
+\paragraph{DPO post-training results.}
+\autoref{tab:dpo_results} reports DPO results (Section~\ref{sec:dpo}) alongside the SFT baseline. DPO did not improve over the SFT checkpoint.
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{lccc}
+  \toprule
+  System & SQL EM (\%) & Record EM (\%) & Record F1 (\%) \\
+  \midrule
+  \multicolumn{4}{l}{\textbf{Dev Results}} \\
+  \midrule
+  SFT baseline (T5-base) & 73.39 & 84.76 & 85.96 \\
+  DPO epoch 0 (= SFT) & 73.39 & 84.76 & 85.96 \\
+  DPO best (epoch 2, $\beta$=0.1, LR=5e-6) & 71.24 & 83.69 & 84.82 \\
+  DPO final eval (best ckpt, beam=4) & 68.67 & 81.12 & 82.42 \\
+  \midrule
+  \multicolumn{4}{l}{\textbf{Test Results}} \\
+  \midrule
+  DPO (best checkpoint) & -- & -- & -- \\
+  \bottomrule
+\end{tabular}
+\caption{DPO results on T5-base (Section~\ref{sec:dpo}). The SFT baseline is ``Base sweep best'' from \autoref{tab:results_t5_base}. DPO training peaked at epoch 2 (F1\,=\,84.82\%) before degrading; early stopping triggered at epoch 7. The final beam-search evaluation of the best checkpoint (82.42\%) fell further below the SFT baseline (85.96\%).}
+\label{tab:dpo_results}
+\end{table}
+
+Three factors likely explain why DPO underperformed:
+\begin{enumerate}
+  \item \textbf{Narrow output distribution.} The restricted 598-token SQL vocabulary already constrains the model to a small output space. DPO's advantage of steering away from bad outputs is diminished when the model has few degrees of freedom.
+  \item \textbf{Preference data quality.} Rejected candidates were either model-generated errors (Phase A) or rule-based perturbations (Phase B). Neither captures the subtle SQL structural errors (wrong JOIN patterns, missing subqueries) that dominate the remaining 14\% SFT error rate (\autoref{tab:qualitative}).
+  \item \textbf{Reward hacking / overfitting.} The reward margin grew from 0.01 to 12.2 over 7 epochs while dev F1 peaked at epoch 2 and collapsed to 71.7\% by epoch 7. The policy learned to maximize the DPO reward signal without improving SQL correctness, a form of reward hacking on the fixed preference dataset.
+\end{enumerate}
+
+
 \begin{table}[h!]
 \centering
 \begin{tabular}{lcc}
@@ -583,7 +640,7 @@ SQL evaluation threads & 128 \\
   \midrule
   \multicolumn{3}{l}{\textbf{Test Results}} \\
   \midrule
-  BM25 $k=3$                  & XX.XX & XX.XX \\
+  BM25 $k=3$                  & 0.00 & 13.93 \\
   \bottomrule
 \end{tabular}
 \caption{LLM prompting development and test results (Part 3). Query EM and Record F1 on the development set for Gemma-2B with various $k$-shot and example selection strategies. Best dev result in bold. Ablations remove individual prompt components from the best (BM25 $k=3$) configuration.}
@@ -716,6 +773,24 @@ SentencePiece comma spacing artifact & \texttt{batch\_decode} collapses \texttt{
 \label{tab:issues_model}
 \end{table}
 \end{landscape}
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabular}{p{3cm}p{5cm}p{5cm}}
+\toprule
+\textbf{Issue} & \textbf{Description} & \textbf{Resolution} \\
+\midrule
+OOV CUDA assert in DPO loss & \texttt{remap\_targets} returned $-1$ for tokens outside the restricted vocab (0.2\% of triplets), causing \texttt{torch.gather} out-of-bounds on GPU. & Clamp unmapped indices to 0 and mask them out of the log-probability sum. \\
+\midrule
+Auto batch probe OOM & Probe measured \texttt{memory\_allocated} (post-cleanup) instead of peak, and tested short sequences; training OOM'd on longer batches. & Use \texttt{max\_memory\_allocated} with worst-case (longest) sequences. \\
+\midrule
+Slow preference data gen & 46K SQL evaluations took $\sim$90 min due to SQLite file locking + per-query connection overhead. & In-memory SQLite copy (\texttt{sqlite3.backup}) + gold record disk cache. Reduced to $\sim$20 min. \\
+\bottomrule
+\end{tabular}
+\caption{DPO-specific engineering issues (Section~\ref{sec:dpo}).}
+\label{tab:dpo_issues}
+\end{table}
 
 
 \end{document}

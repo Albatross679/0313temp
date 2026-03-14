@@ -18,6 +18,7 @@ Field specifications for Reinforcement Learning (Level 1c), classic control algo
   - [Reward Design](#reward-design)
   - [RL Metrics](#rl-metrics-contract)
   - [Training Stability](#rl-training-stability)
+  - [Auto Batch Size for DPO](#auto-batch-size-for-dpo)
   - [Encoder-Decoder Adaptations](#encoder-decoder-adaptations)
 
 ---
@@ -434,6 +435,35 @@ Known failure modes and their detection/mitigation. Check these when monitoring 
 **Detection:** Monitor `success_rate` over first few rollouts.
 
 **Mitigation:** If 0%: warm-start from a stronger SFT checkpoint, use easier reward (partial credit). If 100%: increase task difficulty or use continuous reward (F1) for finer signal.
+
+---
+
+## Auto Batch Size for DPO
+
+DPO has unique VRAM characteristics that affect auto batch size probing.
+
+**Memory profile:**
+- DPO has 4 forward passes per step (policy+ref × chosen+rejected), so activation memory is ~4x higher than standard training per sample.
+- Full-FT DPO loads 2 complete model copies (policy + frozen reference), consuming significant fixed VRAM before any batch processing.
+- LoRA DPO uses a single model with adapter toggling — roughly half the fixed VRAM cost, allowing larger batches.
+
+**Probing pattern for DPO:**
+```python
+# Sort by total sequence length for worst-case probing
+sample_lens = [len(dataset.chosen[i]) + len(dataset.rejected[i])
+               for i in range(len(dataset))]
+longest_indices = sorted(range(len(sample_lens)),
+                         key=lambda i: sample_lens[i], reverse=True)
+
+# Build worst-case batch
+worst_case = [dataset[longest_indices[i]] for i in range(bs)]
+batch = collate_fn(worst_case)
+
+# Measure peak during full train step
+torch.cuda.reset_peak_memory_stats()
+train_step(model, batch, optimizer, ...)
+peak = torch.cuda.max_memory_allocated()
+```
 
 ---
 
