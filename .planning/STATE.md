@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Phase 5 context gathered
-last_updated: "2026-03-14T17:33:28.974Z"
-last_activity: "2026-03-14 - Completed quick task 2: Split T5 results table into T5-small and T5-base tables with Params (M) column"
+status: executing
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-03-14T18:16:47.042Z"
+last_activity: "2026-03-14 - Completed 05-01: RL config dataclass and GRPO/CISPO loss functions"
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 6
-  completed_plans: 1
-  percent: 17
+  total_plans: 9
+  completed_plans: 2
+  percent: 22
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** Get the assignment fully submission-ready -- complete report with real metrics, DPO-improved Part 1 model, and all required output files.
-**Current focus:** Phase 4: Error Analysis
+**Current focus:** Phase 5: RL Fine-Tuning (GRPO/CISPO)
 
 ## Current Position
 
-Phase: 4 of 4 (Error Analysis)
-Plan: 1 of 1 in current phase (COMPLETE)
-Status: Phase 4 complete
-Last activity: 2026-03-14 - Completed quick task 2: Split T5 results table into T5-small and T5-base tables with Params (M) column
+Phase: 5 of 5 (RL Fine-Tuning)
+Plan: 2 of 3 in current phase (Plan 01 complete)
+Status: Executing Phase 5
+Last activity: 2026-03-14 - Completed 05-01: RL config dataclass and GRPO/CISPO loss functions
 
-Progress: [██░░░░░░░░] 17%
+Progress: [██░░░░░░░░] 22%
 
 ## Performance Metrics
 
@@ -51,6 +51,7 @@ Progress: [██░░░░░░░░] 17%
 
 *Updated after each plan completion*
 | Phase 04 P01 | 3min | 2 tasks | 2 files |
+| Phase 05 P01 | 4min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,9 @@ Recent decisions affecting current work:
 - [Phase quick-1]: SQL EM artifact is in SentencePiece decode, not model -- regex post-processing recommended
 - [Phase 04]: Used 7 mutually exclusive error categories with priority-based classification to prevent double-counting
 - [Phase 04]: Classified LLM truncation separately from wrong-reference since 82% of LLM errors are truncation-caused
+- [Phase 05]: CISPO uses .detach() on clamped IS ratio so gradient always flows through log_pi
+- [Phase 05]: Graded reward (+1/+0.5/-0.5/-1) instead of binary for better gradient signal
+- [Phase 05]: LoRA r=32 alpha=64 on q,k,v,o attention projections for RL training
 
 ### Roadmap Evolution
 
@@ -91,6 +95,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T17:33:28.971Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-explore-rl-algorithm-from-minimax-model-for-part-1-fine-tuning/05-CONTEXT.md
+Last session: 2026-03-14T18:16:47.040Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None
