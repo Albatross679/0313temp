@@ -1,3 +1,19 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: planning
+stopped_at: Completed quick-1 (SQL EM investigation)
+last_updated: "2026-03-14T00:29:35.510Z"
+last_activity: 2026-03-13 -- Roadmap restructured (added Phase 1, renumbered)
+progress:
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 5
+  completed_plans: 0
+  percent: 0
+---
+
 # Project State
 
 ## Project Reference
@@ -46,6 +62,7 @@ Recent decisions affecting current work:
 - DPO on best fine-tuned model (base or small) to further improve Record F1
 - Preference data strategy: sample multiple SQL outputs, rank by execution correctness
 - Compare DPO with and without LoRA
+- [Phase quick-1]: SQL EM artifact is in SentencePiece decode, not model -- regex post-processing recommended
 
 ### Roadmap Evolution
 
@@ -63,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-13
-Stopped at: Roadmap restructured, ready to plan Phase 1
+Last session: 2026-03-14T00:29:32.398Z
+Stopped at: Completed quick-1 (SQL EM investigation)
 Resume file: None
