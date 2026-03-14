@@ -171,6 +171,7 @@ plus      -0.5ex minus -.2ex}{0.5ex plus
 \usepackage[top=1in,bottom=1in,left=1.2in,right=1.2in]{geometry}
 \usepackage{hyperref}
 \usepackage[small]{titlesec}
+\usepackage{array}
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage{rotating}
@@ -438,7 +439,7 @@ When reporting your results in \autoref{tab:results}, you will need to refer to 
 
 \section{Results and Analysis (20pt)}
 
-\paragraph{Quantitative Results:} Use \autoref{tab:results_t5} and \autoref{tab:results_llm} to report your test and development set results.
+\paragraph{Quantitative Results:} Use \autoref{tab:results_t5_small}, \autoref{tab:results_t5_base}, and \autoref{tab:results_llm} to report your test and development set results.
 Your test results should match with the results on gradescope.
 For the development set, you should also report results from experiments you conducted to arrive at your final configuration.
 When reporting experiments, you should replace "variant" with brief and meaningful descriptions of whatever hyperparameter or setting that you varied.
@@ -474,42 +475,72 @@ SQL evaluation threads & 128 \\
 \centering
 \small
 \makebox[\textwidth][c]{%
-\begin{tabular}{p{4.2cm}cccccccccc}
+\begin{tabular}{p{4.2cm}crccccccc}
   \toprule
-  System & Method & LR & Batch & Schema & Freeze Enc & Dropout & Epochs & Time & Query EM (\%) & F1 (\%) \\
+  System & Method & Params (M) & LR & Batch & Schema & Dropout & Epochs & Query EM (\%) & F1 (\%) \\
   \midrule
-  \multicolumn{11}{l}{\textbf{Dev Results --- T5 Fine-tuned}} \\
+  \multicolumn{10}{l}{\textbf{Dev Results --- T5-small Fine-tuned}} \\
   \midrule
-  \multicolumn{11}{l}{\emph{Full fine-tune (restricted vocab)}} \\
-  Restricted v1           & Full & 3e-5 & 32  & --       & --       & 0.1 & 29  & 45m  & 0.43  & 45.49 \\
-  Restricted v2           & Full & 1e-4 & 64  & --       & --       & 0.1 & 59  & 55m  & 1.33  & 66.32 \\
-  \textbf{Restricted v3 (best)}  & Full & 3e-4 & 64  & \checkmark & --       & 0.1 & 79  & 75m  & \textbf{2.67}  & \textbf{79.60} \\
-  Restricted v5           & Full & 3e-4 & 64  & --       & \checkmark & 0.1 & 79  & 75m  & 2.00  & 75.45 \\
-  Restricted v7           & Full & 1e-4 & 64  & \checkmark & --       & 0.2 & 79  & 75m  & 1.33  & 69.89 \\[4pt]
-  \multicolumn{11}{l}{\emph{LoRA adapters}} \\
-  LoRA v1 ($r$=16, q/v)       & LoRA & 3e-4 & 128 & --       & --       & 0.1 & 79  & 72m  & 0.00  & 33.46 \\
-  LoRA v2 ($r$=16, q/v)       & LoRA & 3e-4 & 64  & \checkmark & --       & 0.1 & 79  & 80m  & 0.00  & 51.63 \\
-  LoRA v3 ($r$=32, q/k/v/o)   & LoRA & 2e-4 & 64  & --       & --       & 0.1 & 79  & 93m  & 0.00  & 47.58 \\
-  LoRA + freeze encoder    & LoRA & 5e-4 & 128 & --       & \checkmark & 0.1 & 79  & 86m  & 0.00  & 35.16 \\
-  LoRA + warmstart         & LoRA & 3e-4 & 128 & --       & --       & 0.1 & 79  & 90m  & 1.33  & 73.38 \\[4pt]
-  \multicolumn{11}{l}{\emph{MLP projection head}} \\
-  MLP v1 (dim=1024)       & MLP  & 1e-4 & 64  & --       & --       & 0.1 & 31  & 28m  & 0.00  & 8.67 \\
-  MLP v2 (dim=1024)       & MLP  & 1e-4 & 64  & \checkmark & --       & 0.1 & 31  & 27m  & 0.00  & 8.67 \\
+  \multicolumn{10}{l}{\emph{Full fine-tune (restricted vocab)}} \\
+  Restricted v1           & Full & 60.5 & 3e-5 & 32  & --         & 0.1 & 29  & --  & 45.49 \\
+  Restricted v2           & Full & 60.5 & 1e-4 & 64  & --         & 0.1 & 59  & --  & 66.32 \\
+  \textbf{Restricted v3 (best)}  & Full & 60.5 & 3e-4 & 64  & \checkmark & 0.1 & 79  & \textbf{58.80}  & \textbf{79.60} \\
+  Restricted v5 + freeze enc & Full & 41.6 & 3e-4 & 64  & --         & 0.1 & 79  & --  & 75.45 \\
+  Restricted v7           & Full & 60.5 & 1e-4 & 64  & \checkmark & 0.2 & 79  & --  & 69.89 \\[4pt]
+  \multicolumn{10}{l}{\emph{LoRA adapters}} \\
+  LoRA v1 ($r$=16, q/v)       & LoRA & 0.6 & 3e-4 & 128 & --         & 0.1 & 79  & --  & 33.46 \\
+  LoRA v2 ($r$=16, q/v)       & LoRA & 0.6 & 3e-4 & 64  & \checkmark & 0.1 & 79  & --  & 51.63 \\
+  LoRA v3 ($r$=32, q/k/v/o)   & LoRA & 2.4 & 2e-4 & 64  & --         & 0.1 & 79  & --  & 47.58 \\
+  LoRA + freeze encoder    & LoRA & 0.6 & 5e-4 & 128 & --         & 0.1 & 79  & --  & 35.16 \\
+  LoRA + warmstart         & LoRA & 0.6 & 3e-4 & 128 & --         & 0.1 & 79  & --  & 73.38 \\[4pt]
+  \multicolumn{10}{l}{\emph{MLP projection head}} \\
+  MLP v1 (dim=1024)       & MLP  & 61.6 & 1e-4 & 64  & --         & 0.1 & 31  & --  & 8.67 \\
+  MLP v2 (dim=1024)       & MLP  & 61.6 & 1e-4 & 64  & \checkmark & 0.1 & 31  & --  & 8.67 \\
   \midrule
-  \multicolumn{11}{l}{\textbf{Dev Results --- T5 From Scratch}} \\
+  \multicolumn{10}{l}{\textbf{Dev Results --- T5-small From Scratch}} \\
   \midrule
-  From-scratch             & Full & 3e-4 & 32  & --       & --       & 0.1 & 98  & 8h   & 3.22  & 66.12 \\
+  From-scratch             & Full & 60.5 & 3e-4 & 32  & --         & 0.1 & 98  & 50.43  & 66.12 \\
   \midrule
-  \multicolumn{11}{l}{\textbf{Test Results}} \\
+  \multicolumn{10}{l}{\textbf{Test Results}} \\
   \midrule
-  T5 fine-tuning          & Full & 3e-4 & 64  & \checkmark & --       & 0.1 & 79  & --   & XX.XX & XX.XX \\
-  T5 from scratch         & Full & 3e-4 & 32  & --       & --       & 0.1 & 98  & --   & XX.XX & XX.XX \\
+  T5 fine-tuning          & Full & 60.5 & 3e-4 & 64  & \checkmark & 0.1 & 79  & XX.XX & XX.XX \\
+  T5 from scratch         & Full & 60.5 & 3e-4 & 32  & --         & 0.1 & 98  & XX.XX & XX.XX \\
   \bottomrule
 \end{tabular}%
 }% end makebox
-\caption{T5 development and test results (Parts 1 \& 2). Constant hyperparameters shared across all runs are listed in \autoref{tab:constant_params}. Method indicates the adaptation strategy: Full = all parameters updated, LoRA = low-rank adapters on attention layers, MLP = added projection head. Schema = table names prepended to input. Best fine-tuned dev result in bold.}
-\label{tab:results_t5}
+\caption{T5-small development and test results (Parts 1 \& 2). Params (M) = tunable parameters in millions. Constant hyperparameters in \autoref{tab:constant_params}. Method: Full = all parameters, LoRA = low-rank adapters, MLP = projection head. Best dev result in bold.}
+\label{tab:results_t5_small}
 \end{table}
+
+\begin{table}[h!]
+\centering
+\small
+\makebox[\textwidth][c]{%
+\begin{tabular}{p{4.2cm}crccccccc}
+  \toprule
+  System & Method & Params (M) & LR & Batch & Schema & Dropout & Epochs & Query EM (\%) & F1 (\%) \\
+  \midrule
+  \multicolumn{10}{l}{\textbf{Dev Results --- T5-base Fine-tuned}} \\
+  \midrule
+  \multicolumn{10}{l}{\emph{Full fine-tune}} \\
+  \textbf{Base sweep best} & Full & 222.9 & 6.19e-5 & 32 & \checkmark & 0.05 & 79  & -- & \textbf{85.96} \\
+  Base sweep v2            & Full & 222.9 & 5.52e-5 & 32 & \checkmark & 0    & 79  & -- & 84.31 \\
+  Base sweep v3            & Full & 222.9 & 2.59e-4 & 32 & --         & 0.2  & 71  & -- & 83.05 \\
+  Base sweep v4            & Full & 222.9 & 5.50e-5 & 32 & --         & 0    & 31  & -- & 75.77 \\[4pt]
+  \multicolumn{10}{l}{\emph{MLP projection head}} \\
+  Base MLP-512 v1          & MLP  & 223.7 & 2.35e-4 & 32 & --         & 0.15 & 123 & -- & 80.76 \\
+  Base MLP-512 v2          & MLP  & 223.7 & 7.83e-4 & 32 & --         & 0.15 & 43  & -- & 79.56 \\
+  Base MLP-1024            & MLP  & 224.5 & 1.28e-4 & 32 & --         & 0.1  & 147 & -- & 78.86 \\[4pt]
+  \multicolumn{10}{l}{\emph{LoRA adapters}} \\
+  Base LoRA $r$=32 (q/k/v/o) & LoRA & 7.1 & 1.29e-5 & 32 & \checkmark & 0.05 & 335 & -- & 76.48 \\
+  \bottomrule
+\end{tabular}%
+}% end makebox
+\caption{T5-base fine-tuning development results from W\&B random sweep (222M total params). Same constant hyperparameters as \autoref{tab:constant_params} except model = T5-base. Params (M) = tunable parameters in millions. Best result in bold.}
+\label{tab:results_t5_base}
+\end{table}
+
+\paragraph{Query EM correction.} The T5 SentencePiece tokenizer collapses \texttt{" , "} (space-comma-space) to \texttt{", "} (comma-space) during \texttt{batch\_decode}, causing nearly every predicted query to fail string equality regardless of semantic correctness. Experimental variant prediction files were not retained, so their corrected Query EM cannot be recovered (marked ``--''). For the final best fine-tuned and from-scratch models, a regex post-processing step restores the original comma spacing, yielding corrected Query EM of \textbf{58.80\%} and \textbf{50.43\%} respectively. Record F1 and Record EM are unaffected since the spacing difference does not change SQL execution results.
 
 \begin{table}[h!]
 \centering
@@ -551,66 +582,59 @@ SQL evaluation threads & 128 \\
 \begin{landscape}
 \begin{table}
   \centering
-  \begin{tabular}{p{2cm}p{2cm}p{6cm}p{6cm}p{6cm}}
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{2.8cm}>{\raggedright\arraybackslash}p{1.3cm}>{\raggedright\arraybackslash}p{5.4cm}p{5.4cm}p{5.4cm}}
     \toprule
-    \textbf{Error Type} & \textbf{Relevant Models}& \textbf{Example Of Error} & \textbf{Error Description} & \textbf{Statistics} \\
+    \textbf{Error Type} & \textbf{Models}& \textbf{Example Of Error} & \textbf{Error Description} & \textbf{Statistics} \\
     \midrule
     Missing comparison operator
-    & T5 fine-tuned, T5 from scratch
-    & NL: ``flights from salt lake city to new york city arriving before 6pm'' \newline
+    & T5-FT, T5-Scr
+    & NL: ``flights arriving before 6pm'' \newline
       GT: \texttt{arrival\_time < 1800} \newline
       Pred: \texttt{arrival\_time \space\space 1800}
-    & The model drops comparison operators (\texttt{<}, \texttt{>}, \texttt{<=}, \texttt{>=}) from inequality predicates, producing syntactically invalid SQL.
-      Root cause: the T5 SentencePiece tokenizer treats angle brackets as special characters, and beam search decoding fails to emit them.
+    & T5 drops comparison operators (\texttt{<}, \texttt{>}, \texttt{<=}, \texttt{>=}) from inequality predicates, producing invalid SQL. Root cause: SentencePiece tokenizer treats angle brackets as special characters during beam search.
     & T5-FT: 26/466 (5.6\%) \newline
       T5-Scr: 27/466 (5.8\%) \\
     \midrule
-    Query truncation / incomplete generation
-    & ICL (dominant)
-    & NL: ``show me the afternoon flights from washington to boston'' \newline
-      GT: \texttt{SELECT DISTINCT flight\_1.flight\_id FROM flight flight\_1, airport\_service ...} \newline
+    Query truncation
+    & ICL
+    & NL: ``afternoon flights from washington to boston'' \newline
+      GT: \texttt{SELECT DISTINCT flight\_1.flight\_id FROM flight flight\_1 ...} \newline
       Pred: \texttt{SELECT DISTINCT flight\_1.flight\_id}
-    & The model generates only a \texttt{SELECT} fragment without \texttt{FROM}/\texttt{WHERE} clauses, producing incomplete SQL.
-      For ICL, Gemma 2B's \texttt{max\_new\_tokens} limit truncates long queries.
-      The resulting ``no such column'' errors are caused by the missing \texttt{FROM} clause, not by incorrect column names.
+    & Model generates only a \texttt{SELECT} fragment without \texttt{FROM}/\texttt{WHERE} clauses. Caused by Gemma 2B's \texttt{max\_new\_tokens} limit truncating long queries. Resulting ``no such column'' errors stem from the missing \texttt{FROM} clause.
     & ICL: 383/466 (82.2\%) \\
     \midrule
-    Wrong table / column reference
-    & T5 fine-tuned, ICL
-    & NL: ``i would like to plan a flight from boston to denver'' \newline
-      GT FROM: \texttt{flight flight\_1, airport\_service airport\_service\_1, city city\_1, airport\_service airport\_service\_2, city city\_2} \newline
-      Pred FROM: \texttt{flight flight\_1, airport\_service airport\_service\_1, city city\_2} \newline
+    Wrong table/column reference
+    & T5-FT, ICL
+    & NL: ``flight from boston to denver'' \newline
+      GT: \texttt{...city city\_1, ...city city\_2} \newline
+      Pred: \texttt{...city city\_2} (missing \texttt{city\_1}) \newline
       Error: \texttt{no such column: city\_1.city\_code}
-    & The predicted SQL references table aliases or column names not defined in the \texttt{FROM} clause.
-      The model generates plausible alias patterns (e.g., \texttt{city\_1}) but omits the corresponding table declaration, causing execution errors.
+    & Predicted SQL references table aliases or columns not defined in the \texttt{FROM} clause. The model generates plausible alias patterns but omits the corresponding table declaration.
     & T5-FT: 16/466 (3.4\%) \newline
       ICL: 5/466 (1.1\%) \\
     \midrule
     Wrong JOIN structure
-    & T5 fine-tuned, T5 from scratch, ICL
-    & NL: ``flights from boston to san francisco with the maximum number of stops'' \newline
-      GT: \texttt{...stops = (SELECT MAX(stops)...)} \newline
-      Pred: \texttt{...stops = 0} \newline
+    & T5-FT, T5-Scr, ICL
+    & NL: ``flights from boston to san francisco with max stops'' \newline
+      GT: \texttt{stops = (SELECT MAX(stops)...)} \newline
+      Pred: \texttt{stops = 0} \newline
       Returns 4 records instead of 2
-    & The query executes successfully but returns wrong records due to incorrect subquery logic, missing table joins, or wrong aggregation.
-      The model understands the general query pattern but fails on complex multi-table relationships and subqueries.
+    & Query executes but returns wrong records due to incorrect subquery logic, missing joins, or wrong aggregation. Model understands the general pattern but fails on complex multi-table relationships.
     & T5-FT: 83/466 (17.8\%) \newline
       T5-Scr: 144/466 (30.9\%) \newline
       ICL: 35/466 (7.5\%) \\
     \midrule
     Wrong predicate values
-    & T5 fine-tuned, T5 from scratch, ICL
+    & T5-FT, T5-Scr, ICL
     & NL: ``flights available tomorrow from denver to philadelphia'' \newline
       GT: \texttt{month\_number = 1 AND day\_number = 20} \newline
-      Pred: \texttt{month\_number = 2 AND day\_number = 20} \newline
-      Returns 24 records instead of 23
-    & The SQL structure is correct but literal values in \texttt{WHERE} clauses are wrong---wrong month, city name, or time value.
-      The model understands query structure but misinterprets specific values from the natural language input.
-      This is a subset of the semantic errors above, identified by matching \texttt{FROM} tables.
-    & Subset of semantic errors. \newline
-      T5-FT: 83/466 total semantic \newline
-      T5-Scr: 144/466 total semantic \newline
-      ICL: 35/466 total semantic \\
+      Pred: \texttt{month\_number = 2 AND day\_number = 20}
+    & SQL structure is correct but literal values in \texttt{WHERE} clauses are wrong---wrong month, city name, or time. Subset of semantic errors, identified by matching \texttt{FROM} tables.
+    & T5-FT: 83/466 semantic \newline
+      T5-Scr: 144/466 semantic \newline
+      ICL: 35/466 semantic \\
     \bottomrule
   \end{tabular}
   \caption{Qualitative error analysis on the dev set (466 queries) for all three models. Statistics use COUNT/TOTAL format where TOTAL is the full dev set size. Categories are mutually exclusive: each query is classified into exactly one category per model.}\label{tab:qualitative}
@@ -667,6 +691,8 @@ Repetition penalty zero config & Config set \texttt{repetition\_penalty=0} inste
 MLP checkpoint state\_dict mismatch & \texttt{save\_model()} saved the full MLP wrapper's \texttt{state\_dict()} (including \texttt{mlp\_norm}, \texttt{mlp.*} keys) instead of the inner T5 model's. Subsequent non-MLP trials crashed loading checkpoints with unexpected keys, wasting 4 of 8 sweep trials. & Changed \texttt{save\_model()} to always save \texttt{inner.state\_dict()} (vanilla T5 weights), consistent with the LoRA path. \\
 \midrule
 \texttt{max\_new\_tokens} truncation & \texttt{max\_new\_tokens=256} truncated 26\% of dev targets (120/466 queries exceed 256 tokens; max target length is 511). Complex multi-join queries were cut off mid-generation, producing incomplete SQL. & Increased \texttt{max\_new\_tokens} to 512 to cover the full target length range. \\
+\midrule
+SentencePiece comma spacing artifact & \texttt{batch\_decode} collapses \texttt{" , "} (space-comma-space) to \texttt{", "} (comma-space) because the SentencePiece decoder consumes the space sentinel token before commas. Since 100\% of ground truth queries use \texttt{" , "}, raw Query EM dropped to $\sim$3\% despite the model producing correct token sequences internally. & Regex post-processing after \texttt{batch\_decode}: \texttt{re.sub(r'(?<=[a-zA-Z0-9\_()])$\backslash$s*,$\backslash$s+', ' , ', sql)}. Corrected Query EM: 58.80\% (fine-tuned), 50.43\% (from scratch). \\
 \bottomrule
 \end{tabular}
 \caption{Model issues encountered during development.}
