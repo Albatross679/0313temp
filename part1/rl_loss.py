@@ -23,6 +23,9 @@ Exports:
     compute_group_advantages - Group-relative advantage normalization
     compute_execution_reward - Graded SQL execution reward (+1/+0.5/-0.5/-1)
     compute_kl_penalty  - KL divergence penalty between policy and reference
+    ppo_policy_loss     - PPO clipped surrogate (same math as GRPO, different advantages)
+    ppo_value_loss      - MSE value loss with optional PPO-style clipping
+    compute_entropy     - Approximate policy entropy from sequence log probs
 """
 
 from typing import Dict, Optional, Tuple
@@ -68,7 +71,8 @@ def grpo_loss(
         clip_frac = ((ratio < 1.0 - epsilon) | (ratio > 1.0 + epsilon)).float().mean().item()
         mean_ratio = ratio.mean().item()
 
-    return loss, {"clip_frac": clip_frac, "mean_ratio": mean_ratio}
+    return loss, {"clip_frac": clip_frac, "mean_ratio": mean_ratio,
+                  "ratio_max": ratio.max().item()}
 
 
 # ======================================================================
@@ -112,7 +116,8 @@ def cispo_loss(
         clip_frac = (ratio > 1.0 + epsilon_high).float().mean().item()
         mean_ratio = ratio.mean().item()
 
-    return loss, {"clip_frac": clip_frac, "mean_ratio": mean_ratio}
+    return loss, {"clip_frac": clip_frac, "mean_ratio": mean_ratio,
+                  "ratio_max": ratio.max().item()}
 
 
 # ======================================================================
@@ -167,11 +172,14 @@ def cispo_loss_per_token(
         if valid_ratios.numel() > 0:
             clip_frac = (valid_ratios > 1.0 + epsilon_high).float().mean().item()
             mean_ratio = valid_ratios.mean().item()
+            ratio_max = valid_ratios.max().item()
         else:
             clip_frac = 0.0
             mean_ratio = 1.0
+            ratio_max = 1.0
 
-    return loss, {"clip_frac": clip_frac, "mean_ratio": mean_ratio}
+    return loss, {"clip_frac": clip_frac, "mean_ratio": mean_ratio,
+                  "ratio_max": ratio_max}
 
 
 # ======================================================================
@@ -297,3 +305,99 @@ def compute_kl_penalty(
         kl: scalar tensor (to be multiplied by kl_beta in the training loop)
     """
     return (current_log_probs - ref_log_probs).mean()
+
+
+# ======================================================================
+#  PPO policy loss (clipped surrogate, same math as GRPO)
+# ======================================================================
+
+def ppo_policy_loss(
+    current_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    epsilon: float = 0.2,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """PPO clipped surrogate objective. Same math as grpo_loss.
+
+    The PPO vs GRPO distinction is in advantage computation (learned V(s)
+    baseline vs group-relative normalization), not in the loss function itself.
+
+    Args:
+        current_log_probs: (N,) log probs under current policy (sequence-level)
+        old_log_probs: (N,) log probs under old/reference policy (detached)
+        advantages: (N,) advantages (from learned baseline or group-relative)
+        epsilon: symmetric clipping range [1-eps, 1+eps]
+
+    Returns:
+        loss: scalar (negated, ready for .backward())
+        diagnostics: dict with clip_frac, mean_ratio, ratio_max
+    """
+    log_ratio = current_log_probs - old_log_probs.detach()
+    ratio = torch.exp(log_ratio)
+    surr1 = ratio * advantages.detach()
+    surr2 = torch.clamp(ratio, 1.0 - epsilon, 1.0 + epsilon) * advantages.detach()
+    loss = -torch.min(surr1, surr2).mean()
+    with torch.no_grad():
+        clip_frac = ((ratio < 1.0 - epsilon) | (ratio > 1.0 + epsilon)).float().mean().item()
+        mean_ratio = ratio.mean().item()
+    return loss, {"clip_frac": clip_frac, "mean_ratio": mean_ratio,
+                  "ratio_max": ratio.max().item()}
+
+
+# ======================================================================
+#  PPO value loss (MSE with optional clipping)
+# ======================================================================
+
+def ppo_value_loss(
+    values: torch.Tensor,
+    returns: torch.Tensor,
+    old_values: Optional[torch.Tensor] = None,
+    clip_range: float = 0.2,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """MSE value loss with optional PPO-style clipping.
+
+    Args:
+        values: (B,) predicted values from value head
+        returns: (B,) actual returns (rewards, since single-step)
+        old_values: (B,) values from previous iteration (for clipping). None = no clipping.
+        clip_range: clipping range for value updates. 0 = disabled.
+
+    Returns:
+        loss: scalar MSE loss
+        diagnostics: dict with value_pred_mean, value_error
+    """
+    if old_values is not None and clip_range > 0:
+        clipped_values = old_values + torch.clamp(
+            values - old_values, -clip_range, clip_range
+        )
+        loss1 = (values - returns) ** 2
+        loss2 = (clipped_values - returns) ** 2
+        loss = 0.5 * torch.max(loss1, loss2).mean()
+    else:
+        loss = 0.5 * ((values - returns) ** 2).mean()
+
+    with torch.no_grad():
+        value_pred_mean = values.mean().item()
+        value_error = (values - returns).abs().mean().item()
+
+    return loss, {"value_pred_mean": value_pred_mean, "value_error": value_error}
+
+
+# ======================================================================
+#  Policy entropy approximation
+# ======================================================================
+
+def compute_entropy(log_probs: torch.Tensor) -> torch.Tensor:
+    """Approximate policy entropy from sequence log probs.
+
+    For autoregressive models, exact entropy computation requires the full
+    distribution at each step. This approximation uses -E[log_pi] which is
+    an upper bound on true entropy and a standard proxy in RL for LLMs.
+
+    Args:
+        log_probs: (N,) sequence-level log probabilities
+
+    Returns:
+        entropy: scalar approximate entropy (higher = more exploration)
+    """
+    return -log_probs.mean()
