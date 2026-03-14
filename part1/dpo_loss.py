@@ -130,3 +130,71 @@ def dpo_train_step(policy_model, ref_model, batch, optimizer,
         "rejected_reward": rejected_reward_mean.item(),
         "grad_norm": grad_norm,
     }
+
+
+def dpo_train_step_lora(policy_model, batch, optimizer,
+                        beta=0.1, grad_clip_norm=1.0, device="cuda"):
+    """Single DPO training step for LoRA policy (single model, no separate ref).
+
+    Uses peft disable_adapter_layers() to get reference logprobs from the
+    base model with LoRA temporarily disabled.
+
+    Args:
+        policy_model: T5ForFlightSQL with peft-wrapped inner model
+        batch: (prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt,
+                rej_dec_in, rej_tgt) from dpo_collate_fn
+        optimizer: optimizer for LoRA parameters only
+        beta: DPO temperature
+        grad_clip_norm: max gradient norm for clipping
+        device: target device
+
+    Returns:
+        dict with: loss, reward_margin, reward_accuracy,
+                   chosen_reward, rejected_reward, grad_norm
+    """
+    prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt, rej_dec_in, rej_tgt = [
+        t.to(device) for t in batch
+    ]
+
+    # Policy forward (LoRA active)
+    policy_chosen_logps = compute_restricted_log_probs(
+        policy_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
+    policy_rejected_logps = compute_restricted_log_probs(
+        policy_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
+
+    # Reference forward (LoRA disabled = base model)
+    with torch.no_grad():
+        policy_model.model.disable_adapter_layers()
+        ref_chosen_logps = compute_restricted_log_probs(
+            policy_model, prompt_ids, prompt_mask, chosen_dec_in, chosen_tgt)
+        ref_rejected_logps = compute_restricted_log_probs(
+            policy_model, prompt_ids, prompt_mask, rej_dec_in, rej_tgt)
+        policy_model.model.enable_adapter_layers()
+
+    # DPO loss
+    loss, chosen_reward_mean, rejected_reward_mean = dpo_loss(
+        policy_chosen_logps, policy_rejected_logps,
+        ref_chosen_logps, ref_rejected_logps, beta=beta)
+
+    # Backward + grad clip + optimizer step
+    optimizer.zero_grad()
+    loss.backward()
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        policy_model.parameters(), grad_clip_norm).item()
+    optimizer.step()
+
+    # Metrics for logging
+    with torch.no_grad():
+        chosen_rewards = beta * (policy_chosen_logps - ref_chosen_logps)
+        rejected_rewards = beta * (policy_rejected_logps - ref_rejected_logps)
+        reward_margin = (chosen_rewards - rejected_rewards).mean().item()
+        reward_accuracy = (chosen_rewards > rejected_rewards).float().mean().item()
+
+    return {
+        "loss": loss.item(),
+        "reward_margin": reward_margin,
+        "reward_accuracy": reward_accuracy,
+        "chosen_reward": chosen_reward_mean.item(),
+        "rejected_reward": rejected_reward_mean.item(),
+        "grad_norm": grad_norm,
+    }

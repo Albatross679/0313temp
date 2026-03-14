@@ -509,10 +509,11 @@ def generate_preference_data(
 def save_preference_data(
     triplets: List[Tuple[str, str, str]], path: str
 ) -> None:
-    """Save preference triplets to JSON."""
+    """Save preference triplets to JSON as list of dicts."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    data = [{"nl": t[0], "chosen": t[1], "rejected": t[2]} for t in triplets]
     with open(path, "w") as f:
-        json.dump(triplets, f, indent=2)
+        json.dump(data, f, indent=2)
     print(f"Saved {len(triplets)} triplets to {path}")
 
 
@@ -520,6 +521,9 @@ def load_preference_data(path: str) -> List[Tuple[str, str, str]]:
     """Load preference triplets from JSON."""
     with open(path) as f:
         data = json.load(f)
+    # Support both dict format and legacy tuple format
+    if data and isinstance(data[0], dict):
+        return [(d["nl"], d["chosen"], d["rejected"]) for d in data]
     return [tuple(t) for t in data]
 
 
@@ -545,6 +549,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_pairs", type=int, default=3)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--model_checkpoint", type=str, default="google-t5/t5-small",
+                        help="HuggingFace model ID (google-t5/t5-small or google-t5/t5-base)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -565,7 +571,7 @@ if __name__ == "__main__":
     print(f"Loading checkpoint: {ckpt_path}")
 
     # Load model
-    base_model = T5ForConditionalGeneration.from_pretrained("google-t5/t5-small")
+    base_model = T5ForConditionalGeneration.from_pretrained(args.model_checkpoint)
     base_model.load_state_dict(
         torch.load(ckpt_path, map_location=device, weights_only=True)
     )

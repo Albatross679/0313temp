@@ -32,6 +32,7 @@ class T5FineTuneConfig(SLNeuralClsConfig):
     # patience counts eval cycles (not raw epochs); with eval_every_n_epochs=4
     # effective patience = 7 * 4 = 28 training epochs
     patience_epochs: int = 7
+    patience_tolerance: float = 0.005     # min F1 improvement to reset patience
 
     # ── Layer freezing ────────────────────────────────────────────────────
     freeze_encoder: bool = False
@@ -361,8 +362,9 @@ class T5FineTuneConfig_restricted_v7(T5FineTuneConfig):
 
 @dataclass
 class T5DPOConfig(T5FineTuneConfig):
-    """DPO training on restricted_v3 base."""
+    """DPO training on Phase 1 best model (T5-base expert-sweep-1)."""
     name: str = "t5_ft_dpo"
+    model_checkpoint: str = "google-t5/t5-base"
     use_restricted_vocab: bool = True
     include_schema: bool = True
     schema_mode: str = "tables"
@@ -381,4 +383,18 @@ class T5DPOConfig(T5FineTuneConfig):
 
     # Preference data
     preference_data_path: str = "output/dpo_preference_data.json"
-    base_checkpoint_path: str = "output/t5_ft_restricted_v3_20260311_054501/checkpoints/model_best.pt"
+    base_checkpoint_path: str = "output/t5_ft_base_sweep_1i8vr3_20260314_012024/checkpoints/model_best.pt"
+
+
+@dataclass
+class T5DPOConfig_lora(T5DPOConfig):
+    """DPO training with LoRA adapters on the policy model.
+    Uses peft disable_adapter_layers() for reference logprobs (single model copy).
+    """
+    name: str = "t5_ft_dpo_lora"
+    use_lora: bool = True
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    lora_target_modules: list = field(default_factory=lambda: ["q", "v"])
+    learning_rate: float = 1e-5  # slightly higher than full FT DPO since only adapters train

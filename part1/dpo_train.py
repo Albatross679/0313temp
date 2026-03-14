@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from part1.data import PAD_IDX, _TOKENIZER, _load_schema_string, load_t5_data
-from part1.dpo_loss import dpo_train_step
+from part1.dpo_loss import dpo_train_step, dpo_train_step_lora
 from part1.model import initialize_model, load_model_from_checkpoint, save_model
 from part1.model_flightdb import FlightSQLVocab, T5ForFlightSQL
 from part1.train import (
@@ -177,11 +177,19 @@ def dpo_train(cfg, policy_model, ref_model, train_loader, dev_loader,
         num_batches = 0
 
         for batch in tqdm(train_loader, desc=f"DPO Epoch {epoch}"):
-            metrics = dpo_train_step(
-                policy_model, ref_model, batch, optimizer,
-                beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
-                device=device,
-            )
+            use_lora = getattr(cfg, "use_lora", False)
+            if use_lora:
+                metrics = dpo_train_step_lora(
+                    policy_model, batch, optimizer,
+                    beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
+                    device=device,
+                )
+            else:
+                metrics = dpo_train_step(
+                    policy_model, ref_model, batch, optimizer,
+                    beta=cfg.dpo_beta, grad_clip_norm=cfg.grad_clip_norm,
+                    device=device,
+                )
 
             epoch_loss += metrics["loss"]
             epoch_reward_margin += metrics["reward_margin"]
@@ -327,6 +335,7 @@ def parse_args():
     parser.add_argument("--max_wall_clock_hours", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--name", type=str, default=None)
+    parser.add_argument("--use_lora", action="store_true", default=False)
     return parser.parse_args()
 
 
@@ -342,10 +351,13 @@ def apply_cli_overrides(cfg, args):
 
 
 def main():
-    from part1.config import T5DPOConfig
+    from part1.config import T5DPOConfig, T5DPOConfig_lora
 
     args = parse_args()
-    cfg = T5DPOConfig()
+    if args.use_lora:
+        cfg = T5DPOConfig_lora()
+    else:
+        cfg = T5DPOConfig()
     apply_cli_overrides(cfg, args)
     set_random_seeds(cfg.seed)
     device = cfg.device
@@ -395,21 +407,38 @@ def main():
     policy_model = T5ForFlightSQL(policy_base, sql_vocab)
     print("Policy model loaded")
 
-    # Reference model (frozen copy)
-    ref_base = initialize_model(
-        finetune=True, model_checkpoint=cfg.model_checkpoint,
-        dropout=cfg.dropout, device=device,
-    )
-    ref_state = torch.load(cfg.base_checkpoint_path,
-                            map_location=device, weights_only=True)
-    ref_base.load_state_dict(ref_state)
-    ref_model = T5ForFlightSQL(ref_base, sql_vocab)
-    ref_model.eval()
-    for p in ref_model.parameters():
-        p.requires_grad = False
-    assert not any(p.requires_grad for p in ref_model.parameters()), \
-        "Reference model has trainable parameters!"
-    print("Reference model loaded and frozen")
+    # Apply LoRA if configured
+    use_lora = getattr(cfg, "use_lora", False)
+    if use_lora:
+        from peft import LoraConfig as PeftLoraConfig, get_peft_model, TaskType
+        lora_config = PeftLoraConfig(
+            r=cfg.lora_r,
+            lora_alpha=cfg.lora_alpha,
+            lora_dropout=cfg.lora_dropout,
+            target_modules=cfg.lora_target_modules,
+            task_type=TaskType.SEQ_2_SEQ_LM,
+        )
+        policy_model.model = get_peft_model(policy_model.model, lora_config)
+        trainable = sum(p.numel() for p in policy_model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in policy_model.parameters())
+        print(f"LoRA applied: {trainable:,} trainable / {total:,} total params ({100*trainable/total:.2f}%)")
+        ref_model = None  # LoRA uses disable_adapter instead of separate ref
+    else:
+        # Reference model (frozen copy)
+        ref_base = initialize_model(
+            finetune=True, model_checkpoint=cfg.model_checkpoint,
+            dropout=cfg.dropout, device=device,
+        )
+        ref_state = torch.load(cfg.base_checkpoint_path,
+                                map_location=device, weights_only=True)
+        ref_base.load_state_dict(ref_state)
+        ref_model = T5ForFlightSQL(ref_base, sql_vocab)
+        ref_model.eval()
+        for p in ref_model.parameters():
+            p.requires_grad = False
+        assert not any(p.requires_grad for p in ref_model.parameters()), \
+            "Reference model has trainable parameters!"
+        print("Reference model loaded and frozen")
 
     # ── Optimizer (policy only) ──
     optimizer = torch.optim.AdamW(
@@ -488,4 +517,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from src.utils.gpu_lock import GpuLock
+    with GpuLock():
+        main()
