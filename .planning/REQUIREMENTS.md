@@ -43,9 +43,9 @@
 - [x] **RL-01**: Create T5GRPOConfig dataclass with RL-specific fields (algorithm, group_size, epsilon, reward_type, stability params)
 - [x] **RL-02**: Implement GRPO loss function with PPO-style clipping and diagnostics
 - [x] **RL-03**: Implement CISPO loss function with detached IS weight clipping (per-token and sequence-level)
-- [ ] **RL-04**: Implement group sampling with constrained decoding (G=8 completions per query)
-- [ ] **RL-05**: Implement graded execution reward (+1.0/+0.5/-0.5/-1.0) via in-memory SQLite
-- [ ] **RL-06**: Build complete RL training loop with W&B logging, early stopping, gradient spike detection, and LoRA
+- [x] **RL-04**: Implement group sampling with constrained decoding (G=8 completions per query)
+- [x] **RL-05**: Implement graded execution reward (+1.0/+0.5/-0.5/-1.0) via in-memory SQLite
+- [x] **RL-06**: Build complete RL training loop with W&B logging, early stopping, gradient spike detection, and LoRA
 - [ ] **RL-07**: Run GRPO and CISPO experiments within 1-2 hour compute budget
 - [ ] **RL-08**: Add RL Fine-Tuning subsection to report with methodology, results, and analysis
 
@@ -86,9 +86,9 @@ None -- this is a one-shot assignment submission.
 | RL-01 | Phase 5 | Complete |
 | RL-02 | Phase 5 | Complete |
 | RL-03 | Phase 5 | Complete |
-| RL-04 | Phase 5 | Pending |
-| RL-05 | Phase 5 | Pending |
-| RL-06 | Phase 5 | Pending |
+| RL-04 | Phase 5 | Complete |
+| RL-05 | Phase 5 | Complete |
+| RL-06 | Phase 5 | Complete |
 | RL-07 | Phase 5 | Pending |
 | RL-08 | Phase 5 | Pending |
 

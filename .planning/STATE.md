@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-03-14T18:16:47.042Z"
-last_activity: "2026-03-14 - Completed 05-01: RL config dataclass and GRPO/CISPO loss functions"
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-03-14T18:30:00.000Z"
+last_activity: "2026-03-14 - Completed 05-02: RL training pipeline with group sampling and execution reward"
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 9
-  completed_plans: 2
-  percent: 22
+  completed_plans: 3
+  percent: 33
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 ## Current Position
 
 Phase: 5 of 5 (RL Fine-Tuning)
-Plan: 2 of 3 in current phase (Plan 01 complete)
+Plan: 3 of 3 in current phase (Plans 01-02 complete)
 Status: Executing Phase 5
-Last activity: 2026-03-14 - Completed 05-01: RL config dataclass and GRPO/CISPO loss functions
+Last activity: 2026-03-14 - Completed 05-02: RL training pipeline with group sampling and execution reward
 
-Progress: [██░░░░░░░░] 22%
+Progress: [███░░░░░░░] 33%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [██░░░░░░░░] 22%
 *Updated after each plan completion*
 | Phase 04 P01 | 3min | 2 tasks | 2 files |
 | Phase 05 P01 | 4min | 2 tasks | 3 files |
+| Phase 05 P02 | 5min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,9 @@ Recent decisions affecting current work:
 - [Phase 05]: CISPO uses .detach() on clamped IS ratio so gradient always flows through log_pi
 - [Phase 05]: Graded reward (+1/+0.5/-0.5/-1) instead of binary for better gradient signal
 - [Phase 05]: LoRA r=32 alpha=64 on q,k,v,o attention projections for RL training
+- [Phase 05-02]: Log probs recomputed via compute_restricted_log_probs, not generate() scores
+- [Phase 05-02]: Dead groups advantages zeroed out (not removed) for consistent tensor shapes
+- [Phase 05-02]: LoRA reference policy via disable/enable_adapter_layers toggle (single model copy)
 
 ### Roadmap Evolution
 
@@ -95,6 +99,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T18:16:47.040Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-03-14T18:30:00.000Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None
