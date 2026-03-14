@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 Phase: 4 of 4 (Error Analysis)
 Plan: 1 of 1 in current phase (COMPLETE)
 Status: Phase 4 complete
-Last activity: 2026-03-14 - Completed 04-01: Error analysis script and qualitative report table
+Last activity: 2026-03-14 - Completed quick task 2: Split T5 results table into T5-small and T5-base tables with Params (M) column
 
 Progress: [██░░░░░░░░] 17%
 
