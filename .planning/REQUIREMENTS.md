@@ -35,8 +35,8 @@
 
 ### Report Analysis
 
-- [ ] **ANL-01**: Identify common SQL error patterns across all 3 parts
-- [ ] **ANL-02**: Fill qualitative error analysis table with concrete examples and statistics
+- [x] **ANL-01**: Identify common SQL error patterns across all 3 parts
+- [x] **ANL-02**: Fill qualitative error analysis table with concrete examples and statistics
 
 ## v2 Requirements
 
@@ -70,8 +70,8 @@ None -- this is a one-shot assignment submission.
 | RPT-04 | Phase 3 | Pending |
 | VIZ-01 | Phase 3 | Pending |
 | VIZ-02 | Phase 3 | Pending |
-| ANL-01 | Phase 4 | Pending |
-| ANL-02 | Phase 4 | Pending |
+| ANL-01 | Phase 4 | Complete |
+| ANL-02 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 18 total

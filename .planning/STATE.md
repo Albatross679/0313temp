@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: planning
-stopped_at: Completed quick-1 (SQL EM investigation)
-last_updated: "2026-03-14T00:29:35.510Z"
-last_activity: 2026-03-13 -- Roadmap restructured (added Phase 1, renumbered)
+status: completed
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-03-14T13:30:25.177Z"
+last_activity: "2026-03-14 - Completed 04-01: Error analysis script and qualitative report table"
 progress:
   total_phases: 4
-  completed_phases: 0
-  total_plans: 5
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 6
+  completed_plans: 1
+  percent: 17
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-13)
 
 **Core value:** Get the assignment fully submission-ready -- complete report with real metrics, DPO-improved Part 1 model, and all required output files.
-**Current focus:** Phase 1: T5-Base Fine-Tuning
+**Current focus:** Phase 4: Error Analysis
 
 ## Current Position
 
-Phase: 1 of 4 (T5-Base Fine-Tuning)
-Plan: 0 of 1 in current phase
-Status: Ready to plan
-Last activity: 2026-03-14 - Completed quick task 1: Investigate why SQL exact match rate is so low via W&B logs and online research
+Phase: 4 of 4 (Error Analysis)
+Plan: 1 of 1 in current phase (COMPLETE)
+Status: Phase 4 complete
+Last activity: 2026-03-14 - Completed 04-01: Error analysis script and qualitative report table
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 17%
 
 ## Performance Metrics
 
@@ -50,6 +50,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 04 P01 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -63,6 +64,8 @@ Recent decisions affecting current work:
 - Preference data strategy: sample multiple SQL outputs, rank by execution correctness
 - Compare DPO with and without LoRA
 - [Phase quick-1]: SQL EM artifact is in SentencePiece decode, not model -- regex post-processing recommended
+- [Phase 04]: Used 7 mutually exclusive error categories with priority-based classification to prevent double-counting
+- [Phase 04]: Classified LLM truncation separately from wrong-reference since 82% of LLM errors are truncation-caused
 
 ### Roadmap Evolution
 
@@ -86,6 +89,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T00:29:32.398Z
-Stopped at: Completed quick-1 (SQL EM investigation)
+Last session: 2026-03-14T13:30:25.175Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None
