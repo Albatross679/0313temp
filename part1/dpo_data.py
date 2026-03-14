@@ -329,6 +329,7 @@ def _generate_candidates_batch(
         )
 
     decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+    decoded = [re.sub(r'(?<=[a-zA-Z0-9_)])\s*,\s*', ' , ', s) for s in decoded]
 
     # Re-group into per-input lists
     result = []

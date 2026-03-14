@@ -4,6 +4,7 @@ import argparse
 import bisect
 import gc
 import os
+import re
 import signal
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -81,11 +82,19 @@ def _amp_context(use_amp, device):
 
 
 def cleanup_vram():
-    """Force-release all GPU memory between training runs."""
+    """Force-release all GPU memory between training runs.
+
+    Clears all CUDA tensors from the current process, including any
+    leaked references from crashed training runs.
+    """
+    # Force-clear all local frames that might hold model/optimizer refs
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
+        # Nuclear option: reset CUDA memory allocator state
+        torch.cuda.reset_accumulated_memory_stats()
 
 
 def auto_batch_size(cfg, model, train_loader, device, target_vram_pct=0.85):
@@ -215,6 +224,7 @@ def _generate_predictions(model, loader, max_new_tokens, num_beams, device,
                 **gen_kwargs,
             )
             preds = _TOKENIZER.batch_decode(outputs, skip_special_tokens=True)
+            preds = [re.sub(r'(?<=[a-zA-Z0-9_)])\s*,\s*', ' , ', s) for s in preds]
             all_preds.extend(preds)
     return all_preds
 

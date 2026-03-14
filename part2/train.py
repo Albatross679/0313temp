@@ -3,6 +3,7 @@
 import argparse
 import gc
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -120,6 +121,7 @@ def _generate_predictions(model, loader, max_new_tokens, num_beams, device,
                 **gen_kwargs,
             )
             preds = _TOKENIZER.batch_decode(outputs, skip_special_tokens=True)
+            preds = [re.sub(r'(?<=[a-zA-Z0-9_)])\s*,\s*', ' , ', s) for s in preds]
             all_preds.extend(preds)
     return all_preds
 

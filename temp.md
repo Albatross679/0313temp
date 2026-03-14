@@ -15,6 +15,8 @@ backblaze
 --
 # prompts
 
+Check on the training data or logs on throughWeights and Biases. Do some research online, and just find out why the SQL exact match rate is so low. 
+
 update claude tomorrow and enable loop 
 
 "Edit 02.2-VERIFICATION.md — add a pending requirement about worker respawn investigation"

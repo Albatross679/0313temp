@@ -18,6 +18,7 @@ Usage examples:
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -214,6 +215,7 @@ def main():
                 **gen_kwargs,
             )
             preds = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+            preds = [re.sub(r'(?<=[a-zA-Z0-9_)])\s*,\s*', ' , ', s) for s in preds]
             all_preds.extend(preds)
 
     # ── 8. Compute metrics ───────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""W&B Bayesian sweep for T5-base hyperparameter search.
+"""W&B random sweep for T5-base hyperparameter search.
 
 Usage (in tmux):
     tmux new -s sweep
@@ -20,7 +20,11 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 os.environ.setdefault("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
+import gc
+
+import torch
 import wandb
 from part1.config import T5FineTuneConfig_base_v1
 from part1.train import main_with_config, cleanup_vram
@@ -30,9 +34,8 @@ from part1.train import main_with_config, cleanup_vram
 
 def build_sweep_config(budget_hours: float) -> dict:
     return {
-        "method": "bayes",
+        "method": "random",
         "metric": {"name": "record_f1", "goal": "maximize"},
-        "early_terminate": {"type": "hyperband", "min_iter": 8, "eta": 3},
         "parameters": {
             "learning_rate": {
                 "distribution": "log_uniform_values",
@@ -115,7 +118,15 @@ def sweep_train():
 
     try:
         main_with_config(cfg)
+    except Exception as e:
+        print(f"Trial failed: {e}")
     finally:
+        # Aggressively reclaim VRAM after each trial (especially after crashes).
+        # main_with_config locals (model, optimizer) may still hold GPU tensors
+        # until the frame is collected — force multiple gc passes + CUDA reset.
+        del cfg
+        gc.collect()
+        gc.collect()  # second pass catches ref cycles
         cleanup_vram()
 
 
