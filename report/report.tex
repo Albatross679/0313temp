@@ -327,6 +327,50 @@ Constant parameters & Optimizer (AdamW), beam search decoding (num\_beams\,=\,4)
 \label{tab:dpo_design}
 \end{table}
 
+\subsection{RL Fine-Tuning (PPO, GRPO, CISPO)}\label{sec:rl}
+
+We explored three online reinforcement learning algorithms applied to the best T5-base SFT checkpoint (\autoref{tab:results_t5_base}, F1\,=\,85.96\%) via LoRA adapters ($r$\,=\,32, $\alpha$\,=\,64, targeting q/k/v/o projections, 3.08\% trainable parameters). This investigation was motivated by recent work on RL-based LLM alignment: \texttt{GRPO} from DeepSeekMath, \texttt{CISPO} from MiniMax-M1, and classic \texttt{PPO} with a learned value head baseline. To our knowledge, no published work applies these algorithms to T5 encoder-decoder models for NL-to-SQL.
+
+\paragraph{Methodology.} For each query, $G$\,=\,4 SQL completions are generated via constrained decoding (temperature\,=\,0.7, top-$k$\,=\,50). Each completion receives a graded execution reward: +1.0 (exact record match), +0.5 (partial overlap), $-$0.5 (no overlap), $-$1.0 (SQL error). Advantages are computed group-relative for GRPO/CISPO and via a learned value head for PPO. Training uses a random subset of 200--500 queries per epoch with early stopping on dev Record F1.
+
+\begin{itemize}
+  \item \textbf{PPO}: Clipped surrogate objective with a learned value head (MLP on mean-pooled encoder hidden states) as baseline; entropy bonus ($\alpha$\,=\,0.01) for exploration.
+  \item \textbf{GRPO}: PPO-style clipped surrogate with group-relative advantage normalization (no critic network). KL penalty ($\beta$\,=\,0.05).
+  \item \textbf{CISPO}: Detached clamped importance sampling weights that preserve gradient flow for all tokens. No KL penalty ($\beta$\,=\,0).
+\end{itemize}
+
+\paragraph{Results.} \autoref{tab:rl_results} reports dev set metrics for all three algorithms.
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{lccccc}
+  \toprule
+  System & SQL EM (\%) & Record EM (\%) & Record F1 (\%) & KL Drift & Time \\
+  \midrule
+  SFT baseline (T5-base) & 73.39 & 84.76 & 85.96 & -- & -- \\[4pt]
+  PPO + Value Head & 73.39 & 84.76 & 85.96 & $-$6.55 & 46 min \\
+  GRPO & 73.39 & 84.76 & 85.96 & $-$9.88 & 35 min \\
+  CISPO & 73.39 & 84.76 & 85.96 & +0.21 & 45 min \\
+  \bottomrule
+\end{tabular}
+\caption{RL fine-tuning results on T5-base (Section~\ref{sec:rl}). All three algorithms match but do not improve the SFT baseline (85.96\% F1). KL Drift = KL divergence from the reference policy at early stopping.}
+\label{tab:rl_results}
+\end{table}
+
+\paragraph{Analysis.} None of the three RL algorithms improved over the SFT baseline. We identify four contributing factors:
+
+\begin{enumerate}
+  \item \textbf{Reward sparsity.} The base model already achieves F1\,=\,85.96\%. Most generated completions receive +1.0 reward, creating 50--64\% ``dead groups'' (zero reward variance). The RL gradient signal is too sparse to improve an already-strong model.
+
+  \item \textbf{Single-step ratio reduction.} With one gradient step per rollout batch, the importance sampling ratio is always 1.0. PPO clipping (clip\_fraction\,=\,0.000 across all runs) never activates. All three algorithms effectively reduce to vanilla REINFORCE with different advantage baselines.
+
+  \item \textbf{Policy drift without improvement.} PPO and GRPO show increasing negative KL divergence ($-$6.55 and $-$9.88 by early stopping), meaning the policy explores lower-probability regions without finding better outputs. CISPO's detached clipping keeps KL near zero (+0.21) but makes effectively zero policy updates (loss $\approx -$0.008).
+
+  \item \textbf{Coarse reward granularity.} Four discrete reward levels cannot distinguish ``almost correct'' from ``completely wrong'' SQL. A continuous reward based on record set Jaccard similarity might provide finer gradient signal.
+\end{enumerate}
+
+These results suggest that online RL is not effective for improving already-strong NL-to-SQL models on small datasets ($\sim$4K queries). The restricted 598-token SQL vocabulary already constrains the output space, limiting the model's ability to explore meaningfully different SQL structures. Rejection sampling fine-tuning (generate, filter by reward, SFT on filtered outputs) may be more practical for post-training improvement in this setting.
+
 \newpage
 
 \section{Large Language Model (LLM) Prompting (14pt)}\label{sec:llm}
@@ -597,25 +641,31 @@ SQL evaluation threads & 128 \\
   \midrule
   \multicolumn{4}{l}{\textbf{Dev Results}} \\
   \midrule
-  SFT baseline (T5-base) & 73.39 & 84.76 & 85.96 \\
-  DPO epoch 0 (= SFT) & 73.39 & 84.76 & 85.96 \\
-  DPO best (epoch 2, $\beta$=0.1, LR=5e-6) & 71.24 & 83.69 & 84.82 \\
-  DPO final eval (best ckpt, beam=4) & 68.67 & 81.12 & 82.42 \\
+  SFT baseline (T5-base) & 73.39 & 84.76 & 85.96 \\[4pt]
+  \multicolumn{4}{l}{\emph{Full fine-tune ($\beta$=0.3, LR=3.82e-6, WD=8.95e-4, batch=16)}} \\
+  \quad Epoch 0 (= SFT) & 68.45 & 80.69 & 82.18 \\
+  \quad Best (epoch 2) & 71.24 & 83.69 & \textbf{84.82} \\
+  \quad Final eval (best ckpt, beam=4) & 68.67 & 81.12 & 82.42 \\[4pt]
+  \multicolumn{4}{l}{\emph{LoRA $r$=16, q/k/v/o ($\beta$=0.3, LR=1.16e-7, WD=0.071, batch=32)}} \\
+  \quad Epoch 0 (= SFT) & 73.39 & 84.76 & 85.96 \\
+  \quad Best (epoch 0--5, no change) & 73.39 & 84.76 & 85.96 \\
+  \quad Final eval (best ckpt, beam=4) & 61.59 & 74.89 & 75.75 \\
   \midrule
   \multicolumn{4}{l}{\textbf{Test Results}} \\
   \midrule
   DPO (best checkpoint) & -- & -- & -- \\
   \bottomrule
 \end{tabular}
-\caption{DPO results on T5-base (Section~\ref{sec:dpo}). The SFT baseline is ``Base sweep best'' from \autoref{tab:results_t5_base}. DPO training peaked at epoch 2 (F1\,=\,84.82\%) before degrading; early stopping triggered at epoch 7. The final beam-search evaluation of the best checkpoint (82.42\%) fell further below the SFT baseline (85.96\%).}
+\caption{DPO results on T5-base (Section~\ref{sec:dpo}). The SFT baseline is ``Base sweep best'' from \autoref{tab:results_t5_base}. \textbf{Full fine-tune:} training peaked at epoch 2 (F1\,=\,84.82\%) before degrading; early stopping triggered at epoch 7. The final beam-search evaluation of the best checkpoint (82.42\%) fell further below the SFT baseline (85.96\%). \textbf{LoRA:} the low learning rate (1.16e-7) caused effectively no policy update over 6 epochs---dev metrics remained identical to the SFT baseline. However, the final beam-search evaluation dropped to 75.75\%, a 10.2\,pp gap attributed to LoRA merge-and-save corruption and the greedy-vs-beam decoding mismatch (see \autoref{tab:dpo_issues}).}
 \label{tab:dpo_results}
 \end{table}
 
-Three factors likely explain why DPO underperformed:
+Four factors likely explain why DPO underperformed:
 \begin{enumerate}
   \item \textbf{Narrow output distribution.} The restricted 598-token SQL vocabulary already constrains the model to a small output space. DPO's advantage of steering away from bad outputs is diminished when the model has few degrees of freedom.
   \item \textbf{Preference data quality.} Rejected candidates were either model-generated errors (Phase A) or rule-based perturbations (Phase B). Neither captures the subtle SQL structural errors (wrong JOIN patterns, missing subqueries) that dominate the remaining 14\% SFT error rate (\autoref{tab:qualitative}).
-  \item \textbf{Reward hacking / overfitting.} The reward margin grew from 0.01 to 12.2 over 7 epochs while dev F1 peaked at epoch 2 and collapsed to 71.7\% by epoch 7. The policy learned to maximize the DPO reward signal without improving SQL correctness, a form of reward hacking on the fixed preference dataset.
+  \item \textbf{Reward hacking / overfitting (full fine-tune).} The reward margin grew from 1.6 to 12.2 over 8 epochs while dev F1 peaked at epoch 2 and collapsed to 71.7\% by epoch 7. The policy learned to maximize the DPO reward signal without improving SQL correctness, a form of reward hacking on the fixed preference dataset.
+  \item \textbf{Insufficient LoRA learning rate.} The LoRA trial used LR\,=\,1.16e-7, which was too low to move the adapter weights meaningfully---reward accuracy reached only 54\% (barely above random) and dev metrics remained identical to the SFT baseline across all 6 epochs. The 10.2\,pp F1 drop at final evaluation (85.96\%$\to$75.75\%) is attributed to LoRA merge-and-save corruption and the training-time greedy vs.\ final beam-search decoding mismatch.
 \end{enumerate}
 
 
