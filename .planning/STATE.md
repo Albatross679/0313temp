@@ -10,8 +10,8 @@ progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 9
-  completed_plans: 4
-  percent: 44
+  completed_plans: 5
+  percent: 55
 ---
 
 # Project State
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-03-13)
 ## Current Position
 
 Phase: 5 of 5 (RL Fine-Tuning)
-Plan: 4 of 4 in current phase (Plans 01-03 complete)
-Status: Executing Phase 5
-Last activity: 2026-03-14 - Completed 05-03: ML workflow audit fixes and PPO algorithm
+Plan: 4 of 4 in current phase (Plans 01-04 complete)
+Status: Phase 5 Complete
+Last activity: 2026-03-15 - Completed 05-04: RL experiments (PPO/GRPO/CISPO) and report
 
-Progress: [████░░░░░░] 44%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ Progress: [████░░░░░░] 44%
 | Phase 05 P01 | 4min | 2 tasks | 3 files |
 | Phase 05 P02 | 5min | 2 tasks | 1 files |
 | Phase 05 P03 | 8min | 5 tasks | 4 files |
+| Phase 05 P04 | 394min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,9 @@ Recent decisions affecting current work:
 - [Phase 05-03]: Thread-local SQLite connections for safe parallel reward computation
 - [Phase 05-03]: KL always computed even when kl_beta=0 for drift monitoring
 - [Phase 05-03]: max_wall_clock_hours=None per config; --max_hours at sweep level
+- [Phase 05-04]: All three RL algorithms (PPO/GRPO/CISPO) match SFT baseline F1=85.96% without improvement
+- [Phase 05-04]: RL failure attributed to reward sparsity, single-step ratio reduction, coarse rewards
+- [Phase 05-04]: Batch_size=4, group_size=4, train_subset=200 for practical RL epoch times
 
 ### Roadmap Evolution
 
@@ -104,6 +108,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-14T21:21:00.000Z
-Stopped at: Completed 05-03-PLAN.md
+Last session: 2026-03-15T03:58:28Z
+Stopped at: Completed 05-04-PLAN.md (Tasks 1-2 done, Task 3 human-verify pending)
 Resume file: None

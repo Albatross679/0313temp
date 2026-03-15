@@ -46,8 +46,8 @@
 - [x] **RL-04**: Implement group sampling with constrained decoding (G=8 completions per query)
 - [x] **RL-05**: Implement graded execution reward (+1.0/+0.5/-0.5/-1.0) via in-memory SQLite
 - [x] **RL-06**: Build complete RL training loop with W&B logging, early stopping, gradient spike detection, and LoRA
-- [ ] **RL-07**: Run GRPO and CISPO experiments within 1-2 hour compute budget
-- [ ] **RL-08**: Add RL Fine-Tuning subsection to report with methodology, results, and analysis
+- [x] **RL-07**: Run GRPO and CISPO experiments within 1-2 hour compute budget
+- [x] **RL-08**: Add RL Fine-Tuning subsection to report with methodology, results, and analysis
 
 ## v2 Requirements
 
@@ -89,8 +89,8 @@ None -- this is a one-shot assignment submission.
 | RL-04 | Phase 5 | Complete |
 | RL-05 | Phase 5 | Complete |
 | RL-06 | Phase 5 | Complete |
-| RL-07 | Phase 5 | Pending |
-| RL-08 | Phase 5 | Pending |
+| RL-07 | Phase 5 | Complete |
+| RL-08 | Phase 5 | Complete |
 
 **Coverage:**
 - v1 requirements: 26 total
