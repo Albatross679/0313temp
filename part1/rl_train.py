@@ -251,14 +251,15 @@ def sample_group_completions(model, vocab, tokenizer, nl_texts, gold_sql_list,
 # ======================================================================
 
 def compute_old_log_probs(model, encoder_input, encoder_mask, generated_ids,
-                          cfg, device, per_token=False, encoder_outputs=None):
-    """Compute log probabilities of generated sequences under the reference policy.
+                          cfg, device, per_token=False, encoder_outputs=None,
+                          use_reference=True):
+    """Compute log probabilities of generated sequences under a policy.
 
-    For LoRA models: disables adapter layers to get base model (reference) log probs.
-    For non-LoRA: uses the model as-is (caller should pass the reference model).
-
-    Supports encoder output caching: when encoder_outputs is provided, the encoder
-    pass is skipped and the cached outputs are used directly.
+    Two modes controlled by `use_reference`:
+      - use_reference=True:  Disables LoRA adapters → base model (reference) log probs.
+                             Used for KL penalty computation.
+      - use_reference=False: Keeps LoRA enabled → current policy log probs (detached).
+                             Used for the "old" log probs in IS ratio computation.
 
     Args:
         model: T5ForFlightSQL policy model
@@ -269,6 +270,8 @@ def compute_old_log_probs(model, encoder_input, encoder_mask, generated_ids,
         device: torch device
         per_token: if True, return (token_log_probs, mask) instead of sequence sums
         encoder_outputs: optional (B*G, T_enc, d_model) pre-computed encoder hidden states
+        use_reference: if True, disable LoRA for reference log probs (KL penalty);
+                       if False, keep LoRA enabled for old policy log probs (IS ratio)
 
     Returns:
         If per_token=False: (B*G,) sequence-level log probs (detached)
@@ -280,9 +283,9 @@ def compute_old_log_probs(model, encoder_input, encoder_mask, generated_ids,
     decoder_input = torch.cat([bos, generated_ids[:, :-1]], dim=1)
     decoder_targets = generated_ids
 
-    # Disable LoRA adapters to get reference policy log probs
+    # Only disable LoRA adapters when computing reference log probs
     has_lora = cfg.use_lora and hasattr(model.model, 'disable_adapter_layers')
-    if has_lora:
+    if has_lora and use_reference:
         model.model.disable_adapter_layers()
 
     with torch.no_grad(), _amp_context(cfg.use_amp, device):
@@ -292,8 +295,8 @@ def compute_old_log_probs(model, encoder_input, encoder_mask, generated_ids,
             pad_idx=PAD_IDX, per_token=per_token,
         )
 
-    # Re-enable LoRA adapters
-    if has_lora:
+    # Re-enable LoRA adapters if we disabled them
+    if has_lora and use_reference:
         model.model.enable_adapter_layers()
 
     if per_token:
@@ -411,31 +414,42 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
     encoder_input = encoded["input_ids"].to(device).repeat_interleave(G, dim=0)
     encoder_mask = encoded["attention_mask"].to(device).repeat_interleave(G, dim=0)
 
-    # ── OLD LOG PROB PHASE (reference policy) ──
+    # ── OLD LOG PROB PHASE (current policy, detached — for IS ratio) ──
+    # Both old and current log probs computed in eval() mode to eliminate dropout
+    # noise. With train() mode, different dropout masks make ratio ≠ 1.0 even from
+    # the same model weights, causing spurious clipping (clip_frac > 0.9 at init).
+    # eval() still allows gradient computation — it only disables dropout/batchnorm.
+    policy_model.eval()
+
     if use_per_token:
         old_logps, old_mask = compute_old_log_probs(
             policy_model, encoder_input, encoder_mask, generated_ids,
-            cfg, device, per_token=True,
+            cfg, device, per_token=True, use_reference=False,
         )
         old_seq_logps = compute_old_log_probs(
             policy_model, encoder_input, encoder_mask, generated_ids,
-            cfg, device, per_token=False,
+            cfg, device, per_token=False, use_reference=False,
         )
     else:
         old_logps = compute_old_log_probs(
             policy_model, encoder_input, encoder_mask, generated_ids,
-            cfg, device, per_token=False,
+            cfg, device, per_token=False, use_reference=False,
         )
-        # Always need ref log probs for KL computation
         old_seq_logps = old_logps
 
-    # ── UPDATE PHASE (gradients enabled) ──
+    # ── REFERENCE LOG PROB PHASE (base model, LoRA disabled — for KL penalty) ──
+    ref_seq_logps = compute_old_log_probs(
+        policy_model, encoder_input, encoder_mask, generated_ids,
+        cfg, device, per_token=False, use_reference=True,
+    )
+
+    # ── UPDATE PHASE (gradients enabled, still in eval mode for determinism) ──
     B_G = generated_ids.shape[0]
     bos = torch.full((B_G, 1), _BOS_ID, dtype=torch.long, device=device)
     decoder_input = torch.cat([bos, generated_ids[:, :-1]], dim=1)
     decoder_targets = generated_ids
 
-    # Current policy log probs (with gradients)
+    # Current policy log probs (with gradients, eval mode for dropout consistency)
     with _amp_context(cfg.use_amp, device):
         if use_per_token:
             current_token_logps, current_mask = compute_restricted_log_probs(
@@ -453,7 +467,7 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
             )
             current_seq_logps = current_logps
 
-    # Select loss function
+    # Select loss function (IS ratio: current policy vs old policy)
     if is_ppo:
         loss, diag = ppo_policy_loss(
             current_logps, old_logps, advantages, cfg.epsilon,
@@ -473,19 +487,16 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
             current_logps, old_logps, advantages, cfg.epsilon,
         )
 
-    # Always compute KL divergence for monitoring (even when kl_beta=0)
+    # Always compute KL divergence for monitoring (current policy vs reference)
     with torch.no_grad():
         kl_val = compute_kl_penalty(
-            current_seq_logps.detach(), old_seq_logps.detach()
+            current_seq_logps.detach(), ref_seq_logps,
         ).item()
 
-    # Add KL to loss if kl_beta > 0
+    # Add KL to loss if kl_beta > 0 (penalize divergence from reference)
     kl_penalty_val = kl_val
     if cfg.kl_beta > 0:
-        if use_per_token:
-            kl_tensor = compute_kl_penalty(current_seq_logps, old_seq_logps)
-        else:
-            kl_tensor = compute_kl_penalty(current_logps, old_logps)
+        kl_tensor = compute_kl_penalty(current_seq_logps, ref_seq_logps)
         loss = loss + cfg.kl_beta * kl_tensor
 
     # PPO: add value loss and entropy bonus
@@ -551,6 +562,9 @@ def grpo_train_step(policy_model, batch_nl, batch_gold_sql, batch_gold_records,
         optimizer.step()
         if value_optimizer is not None:
             value_optimizer.step()
+
+    # Restore train mode for next step's generation phase
+    policy_model.train()
 
     # ── Compile full RL metrics contract ──
     reward_grouped = rewards.view(B, G)

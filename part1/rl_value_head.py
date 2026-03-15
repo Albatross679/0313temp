@@ -27,6 +27,9 @@ class T5ValueHead(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
+        # Zero-init output layer so V(s) ≈ 0 at start (rewards are in [-1, 1])
+        nn.init.zeros_(self.head[-1].weight)
+        nn.init.zeros_(self.head[-1].bias)
 
     def forward(self, encoder_hidden_states: torch.Tensor,
                 attention_mask: torch.Tensor) -> torch.Tensor:
