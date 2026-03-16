@@ -1,4 +1,4 @@
-FROM vastai/pytorch:2.8.0-cuda-12.8.1-py312-22.04
+FROM nvcr.io/nvidia/pytorch:26.02-py3
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
