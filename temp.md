@@ -32,6 +32,10 @@ In the first row, why is there a huge space gap between the natural language and
 
 when the trial 2 is done, let's move onto GRPO and CISCO in phase 5. 
 
+The Vast.ai base image (vastai/pytorch:*) already creates a non-root user called user (UID 1001) with passwordless sudo. You get this for free.
+
+
+
 --
 # prompts
 

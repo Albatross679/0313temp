@@ -1,4 +1,4 @@
-% Academic Poster — NL-to-SQL with T5 and DPO
+% Academic Poster — NL-to-SQL with T5: SFT, DPO, and RL
 % Compile: cd poster && pdflatex -interaction=nonstopmode poster.tex
 
 \PassOptionsToPackage{dvipsnames}{xcolor}
@@ -9,18 +9,19 @@
 \usepackage{booktabs}
 \usepackage{amsmath}
 \usepackage{enumitem}
-
+\usepackage{array}
 % ── Remove watermark ─────────────────────────────────────
 \tikzposterlatexaffectionproofoff
 
 % ── Metadata ──────────────────────────────────────────────
-\title{NL-to-SQL with T5: Fine-Tuning and DPO}
+\title{NL-to-SQL with T5: SFT, DPO, and RL}
 \author{Qifan Wen}
-\institute{CSE 5525 -- The Ohio State University}
+\institute{The Ohio State University}
 
 % ── Theme & Colors ────────────────────────────────────────
 \usetheme{Default}
 \usecolorstyle{Denmark}
+\usetitlestyle[width=\paperwidth]{Default}
 
 \begin{document}
 \maketitle
@@ -33,36 +34,44 @@
   \column{0.33}
 
   \block{Problem \& Motivation}{
-    \textbf{Goal:} Translate natural language questions about a flight database into executable SQL queries.
+    \textbf{Goal:} Translate natural language questions into executable SQL over a 25-table flight database.
 
     \vspace{0.3em}
     \textbf{Example:}\\
     \textit{``Show me flights from Boston to Denver''} \\
-    $\rightarrow$ \texttt{SELECT flight\_id FROM flight WHERE from\_airport IN (SELECT airport\_code FROM airport WHERE airport\_name = `BOSTON') \ldots}
+    $\rightarrow$ \texttt{SELECT flight\_id FROM flight WHERE from\_airport IN (SELECT airport\_code FROM airport WHERE \ldots)}
 
     \vspace{0.3em}
-    \begin{itemize}[nosep, leftmargin=*]
-      \item NL-to-SQL requires handling complex joins, subqueries, and domain schema
-      \item We compare \textbf{three paradigms}: pretrained fine-tuning, training from scratch, and preference-based post-training (DPO)
-    \end{itemize}
+    We compare three paradigms -- supervised fine-tuning, offline preference optimization (DPO), and online RL (PPO, GRPO, CISPO) -- to understand when post-training improves a strong seq2seq baseline.
   }
 
-  \block{Dataset \& Evaluation}{
-    \begin{itemize}[nosep, leftmargin=*]
-      \item \textbf{Flight database}: 25 relational tables (SQLite)
-      \item \textbf{Data}: 4,225 train / 466 dev NL--SQL pairs
-      \item \textbf{Metrics}: Record F1 (primary), Record EM, SQL EM
-      \item F1 over records retrieved by executing predicted SQL
-    \end{itemize}
+  \block{Dataset \& Setup}{
+    \begin{center}
+    \begin{tabular}{@{}p{0.42\linewidth} p{0.52\linewidth}@{}}
+      \toprule
+      \textbf{Property} & \textbf{Value} \\
+      \midrule
+      Database         & 25 tables (SQLite) \\
+      Train / Dev      & 4,225 / 466 NL--SQL pairs \\
+      Mean NL length   & 18.1 tokens \\
+      Mean SQL length  & 217.4 tokens \\
+      Primary metric   & Record F1 \\
+      Other metrics    & Record EM, SQL EM \\
+      \midrule
+      GPU              & NVIDIA RTX 5090 (32\,GB) \\
+      SFT compute      & 32.4 hrs (23 configs) \\
+      DPO compute      & 5.0 hrs (W\&B sweep) \\
+      RL compute       & 2.1 hrs (3 algorithms) \\
+      Total compute    & 39.5 hrs \\
+      \bottomrule
+    \end{tabular}
+    \end{center}
   }
 
-  \block{Key Design Decisions}{
-    \begin{itemize}[nosep, leftmargin=*]
-      \item \textbf{Restricted decoder vocab}: 598 SQL-relevant tokens -- prevents hallucination of invalid identifiers
-      \item \textbf{Schema augmentation}: table names prepended to encoder input (+93 tokens/example)
-      \item \textbf{Beam search}: 4 beams at inference
-      \item \textbf{Cosine LR schedule} with warmup; AdamW optimizer
-    \end{itemize}
+  \block{T5-small SFT: Variant Comparison}{
+    \begin{center}
+      \includegraphics[width=0.95\linewidth]{../media/dev_f1_comparison.pdf}
+    \end{center}
   }
 
   % ══════════════════════════════════════════════════════════
@@ -70,37 +79,69 @@
   % ══════════════════════════════════════════════════════════
   \column{0.34}
 
-  \block{Approach 1: Supervised Fine-Tuning (SFT)}{
-    \begin{itemize}[nosep, leftmargin=*]
-      \item \textbf{T5-small} (60M params): full fine-tune with restricted vocab head
-      \item \textbf{T5-base} (222M params): W\&B sweep over LR, dropout, label smoothing
-      \item \textbf{Adaptation methods}: full fine-tune, LoRA ($r$=16/32), MLP head, encoder freezing
-      \item Schema augmentation: \textbf{+13.7pp} F1 on T5-small (66.3\% $\to$ 79.6\%)
-      \item LoRA warm-start: 73.4\% F1 with 100$\times$ fewer trainable params
-    \end{itemize}
-
+  \block{Supervised Fine-Tuning (SFT)}{
     \begin{center}
-      \includegraphics[width=0.92\linewidth]{../media/dev_f1_comparison.pdf}
+    \begin{tabular}{@{}p{0.28\linewidth} p{0.67\linewidth}@{}}
+      \toprule
+      \textbf{Design Choice} & \textbf{Description} \\
+      \midrule
+      Models          & T5-small (60M), T5-base (222M) \\[4pt]
+      Decoder vocab   & Restricted to 598 SQL tokens (keywords, tables, columns) \\[4pt]
+      Schema augment. & Table names prepended to input (+93 tok/ex); \textbf{+13.7pp F1} \\[4pt]
+      Adaptation      & Full fine-tune, LoRA ($r$=16/32), MLP head, encoder freeze \\[4pt]
+      HP search       & W\&B sweep: LR, dropout, label smoothing, weight decay \\[4pt]
+      Best config     & T5-base: LR=6.19e-5, label smooth.=0.15, dropout=0.05 \\[4pt]
+      \textbf{Best dev F1} & \textbf{85.96\%} (SQL EM = 73.39\%, Rec.\ EM = 84.76\%) \\
+      \bottomrule
+    \end{tabular}
     \end{center}
   }
 
-  \block{Approach 2: Training From Scratch}{
-    \begin{itemize}[nosep, leftmargin=*]
-      \item Same T5-small architecture from \textbf{random initialization}
-      \item Required 8 hours and 98 epochs (vs.\ 75 min for fine-tuning)
-      \item Reached 66.1\% F1 -- \textbf{13.5pp below} the fine-tuned model
-      \item Demonstrates the value of pretrained representations
-    \end{itemize}
+  \block{DPO Post-Training}{
+    \begin{center}
+    \begin{tabular}{@{}p{0.28\linewidth} p{0.67\linewidth}@{}}
+      \toprule
+      \textbf{Design Choice} & \textbf{Description} \\
+      \midrule
+      Base model       & T5-base SFT checkpoint (F1 = 85.96\%) \\[4pt]
+      Preference data  & 9,801 triplets: model-generated negatives (diverse beam search) + execution-aware perturbations \\[4pt]
+      Loss             & $\mathcal{L}_\text{DPO}\!=\!-\log\sigma(\beta[\Delta\log\pi_\theta \!-\! \Delta\log\pi_\text{ref}])$ \\[4pt]
+      HP search        & $\beta \in \{0.05$--$0.5\}$, LR, full fine-tune vs.\ LoRA \\[4pt]
+      \textbf{Best dev F1} & \textbf{84.82\%} ($-$1.14pp vs.\ SFT baseline) \\[4pt]
+      Failure mode     & Reward hacking: margin $1.6 \to 12.2$, F1 collapsed \\
+      \bottomrule
+    \end{tabular}
+    \end{center}
   }
 
-  \block{Approach 3: DPO Post-Training}{
-    \begin{itemize}[nosep, leftmargin=*]
-      \item \textbf{Direct Preference Optimization} on top of best SFT model (T5-base, F1=86.0\%)
-      \item 9,801 preference triplets: model-generated negatives + execution-aware perturbations
-      \item Loss: $\mathcal{L}_\text{DPO} = -\log\sigma\bigl(\beta[\Delta\log\pi_\theta - \Delta\log\pi_\text{ref}]\bigr)$
-      \item Swept $\beta$, LR, full fine-tune vs.\ LoRA
-      \item \textbf{Did not improve}: restricted vocab already constrains output space; reward hacking observed (margin grew $1.6 \to 12.2$ while F1 collapsed)
-    \end{itemize}
+  \block{RL Fine-Tuning (PPO, GRPO, CISPO)}{
+    \begin{center}
+    \begin{tabular}{@{}p{0.28\linewidth} p{0.67\linewidth}@{}}
+      \toprule
+      \textbf{Design Choice} & \textbf{Description} \\
+      \midrule
+      Base model & T5-base SFT checkpoint (F1 = 85.96\%) \\[4pt]
+      Adapter    & LoRA $r$=32, $\alpha$=64 on q/k/v/o (6.86M params, 3\%) \\[4pt]
+      Reward     & +1.0 exact, +0.5 partial, $-$0.5 wrong, $-$1.0 SQL error \\[4pt]
+      Sampling   & $G$=4 completions/query, temp=0.7, top-$k$=50 \\
+      \bottomrule
+    \end{tabular}
+    \end{center}
+
+    \vspace{0.5em}
+    \begin{center}
+    \begin{tabular}{@{}lccccr@{}}
+      \toprule
+      \textbf{Algorithm} & \textbf{Critic} & $\boldsymbol{\beta}$ & \textbf{KL Drift} & \textbf{Dead Groups} & \textbf{Dev F1} \\
+      \midrule
+      PPO   & Value head & 0.02 & $-$6.55 & 53\% & 85.96 \\
+      GRPO  & None       & 0.05 & $-$9.88 & 49\% & 85.96 \\
+      CISPO & None       & 0    & +0.21   & 61\% & 85.96 \\
+      \bottomrule
+    \end{tabular}
+    \end{center}
+    \vspace{0.3em}
+    {\small \textbf{Root cause}: single-step IS ratio = 1.0 $\Rightarrow$ all three reduce to REINFORCE. 50--64\% dead groups leave no gradient signal.}
   }
 
   % ══════════════════════════════════════════════════════════
@@ -111,21 +152,22 @@
   \block{Results}{
     \begin{center}
     \large
-    \begin{tabular}{lccc}
+    \begin{tabular}{@{}lccc@{}}
       \toprule
       \textbf{System} & \textbf{SQL EM} & \textbf{Rec.\ EM} & \textbf{Rec.\ F1} \\
       \midrule
-      \multicolumn{4}{l}{\emph{Dev Results}} \\
+      \multicolumn{4}{@{}l}{\emph{Dev Results}} \\
       \midrule
-      T5-small SFT (best)    & 58.80 & --   & 79.60 \\
-      T5-small from scratch  & 50.43 & --   & 66.12 \\
-      T5-base SFT (best)     & 73.39 & 84.76 & \textbf{85.96} \\
-      DPO on T5-base         & 71.24 & 83.69 & 84.82 \\
+      T5-small SFT     & 58.80 & --    & 79.60 \\
+      T5-base SFT      & 73.39 & 84.76 & \textbf{85.96} \\
+      DPO on T5-base   & 71.24 & 83.69 & 84.82 \\
+      PPO on T5-base   & 73.39 & 84.76 & 85.96 \\
+      GRPO on T5-base  & 73.39 & 84.76 & 85.96 \\
+      CISPO on T5-base & 73.39 & 84.76 & 85.96 \\
       \midrule
-      \multicolumn{4}{l}{\emph{Test Results}} \\
+      \multicolumn{4}{@{}l}{\emph{Test Results}} \\
       \midrule
-      T5-small SFT           & 0.00  & --   & 55.25 \\
-      T5-small from scratch  & 0.00  & --   & 59.16 \\
+      T5-small SFT     & 0.00  & --    & 55.25 \\
       \bottomrule
     \end{tabular}
     \end{center}
@@ -137,20 +179,27 @@
 
   \block{Key Findings}{
     \begin{enumerate}[nosep, leftmargin=*]
-      \item \textbf{Pretraining matters}: 79.6\% vs.\ 66.1\% F1 (+13.5pp) -- pretrained representations provide strong initialization for NL-to-SQL
-      \item \textbf{Scale helps}: T5-base (222M) reaches 86.0\% F1 vs.\ T5-small (60M) at 79.6\% (+6.4pp)
-      \item \textbf{Schema augmentation is critical}: +13.7pp F1 from adding table names to encoder input
-      \item \textbf{DPO hits a ceiling}: restricted decoder vocab (598 tokens) leaves little room for preference optimization
+      \item \textbf{SFT sets a strong ceiling}: T5-base reaches 86.0\% F1 with restricted vocab + schema augmentation (+13.7pp from schema alone)
+      \item \textbf{Scale matters}: T5-base (222M) outperforms T5-small (60M) by +6.4pp F1
+      \item \textbf{DPO reward-hacks}: preference margin grows without improving SQL correctness -- restricted vocab leaves little room to steer
+      \item \textbf{RL is ineffective at 86\% F1}: reward too sparse (50--64\% dead groups); single-step updates reduce PPO/GRPO/CISPO to REINFORCE
     \end{enumerate}
   }
 
   \block{References}{
     {\small
     [1] Rafailov et al.\ \textit{Direct Preference Optimization}. NeurIPS 2023. \\[2pt]
-    [2] Raffel et al.\ \textit{Exploring the Limits of Transfer Learning with T5}. JMLR 2020. \\[2pt]
-    [3] Hu et al.\ \textit{LoRA: Low-Rank Adaptation of LLMs}. ICLR 2022.
+    [2] Shao et al.\ \textit{DeepSeekMath: Group Relative Policy Opt.}\ 2024. \\[2pt]
+    [3] MiniMax.\ \textit{CISPO: Clamped IS Policy Optimization}. 2025. \\[2pt]
+    [4] Raffel et al.\ \textit{Transfer Learning with T5}. JMLR 2020.
     }
   }
 
 \end{columns}
+
+% ── QR code, top-right of title bar ──
+\node[anchor=north east, inner sep=6pt]
+  at (38cm, \titlepostop-1cm)
+  {\includegraphics[height=7cm]{../media/linkedin_qr.png}};
+
 \end{document}

@@ -103,7 +103,7 @@ All edits flow: webview `postMessage` → extension handler → `updateField()`/
 ## Build & Install
 
 ```bash
-cd /home/coder/snake-hrl-torchrl/doc-db
+cd <project-root>/doc-db
 npx tsc -p ./                                          # TypeScript → out/
 npx @vscode/vsce package --allow-missing-repository    # → doc-db-0.1.0.vsix
 code --install-extension doc-db-0.1.0.vsix --force     # Install
