@@ -35,20 +35,8 @@ when the trial 2 is done, let's move onto GRPO and CISCO in phase 5.
 --
 # prompts
 
-Check on the training data or logs on throughWeights and Biases. Do some research online, and just find out why the SQL exact match rate is so low. 
+Use the ask user question tool if you have any confusion along the way. 
 
-update claude tomorrow and enable loop 
-
-"Edit 02.2-VERIFICATION.md — add a pending requirement about worker respawn investigation"
-The user will instruct when to stop, so safe or graceful exit must be enforced.
-also include in the plan that the executor must adjust batch size in order to maximize the vram usage. Make sure to clean up vram usage as well.
-
-
-loop: 20mins when the train has been launched, check on the training status, make sure it is running healthily. solve and document any issues you encounter.
-
-
+/loop: 20mins when the train has been launched, check on the training status, make sure it is running healthily. solve and document any issues you encounter.
 
 check on the approval points
-
-
-Explore the possibility of using the algorithm that trains the newest Minimax model. It explores the possibility of that algorithm on our part one fine-tune I think that's a reinforcement learning algorithm. 

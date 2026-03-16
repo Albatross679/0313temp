@@ -1,10 +1,69 @@
+# === Model artifacts & checkpoints ===
 output/
+model/
+checkpoint-*/
+*.onnx
+
+# Un-ignore specific LFS-tracked checkpoints for submission
 !output/t5_ft_restricted_v3/
 !output/t5_ft_restricted_v3/checkpoints/
 !output/t5_ft_restricted_v3/checkpoints/model_best.pt
 !output/t5_scr_restricted/
 !output/t5_scr_restricted/checkpoints/
 !output/t5_scr_restricted/checkpoints/model_best.pt
-wandb/
+
+# === Python caches ===
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === W&B local ===
+wandb/
+
+# === Environment & secrets ===
+.env
+.env.local
+.env.*.local
+
+# === IDE & personal config ===
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# === Claude personal config (keep shared skills in Git) ===
+.claude/settings.local.json
+.claude/memory/
+.claude/scheduled_tasks.lock
+
+# === OS artifacts ===
+.DS_Store
+Thumbs.db
+
+# === Packaged skills (build artifacts) ===
+*.skill
+
+# === LaTeX build artifacts ===
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.bbl
+*.blg
+
+# === Misc large/generated ===
+*.tar.gz
+*.zip
+nohup.out

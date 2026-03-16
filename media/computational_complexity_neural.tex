@@ -1,0 +1,214 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs, tabularx}
+\usepackage{enumitem}
+
+\newcommand{\bigO}{\mathcal{O}}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Computational Complexity of Neural Network\\Forward and Backward Passes}\\[8pt]
+{\itshape What $C_\pi$ and $C_V$ actually mean in RL algorithm analysis}
+\end{center}
+
+\vspace{12pt}
+
+%% ============================================================
+\section{Why $C_\pi$ Appears in Complexity Analysis}
+%% ============================================================
+
+In the RL algorithm pseudocode, we write complexities like $\bigO(K \!\cdot\! NT \!\cdot\! C_\pi)$.
+Here $C_\pi$ is the cost of \textbf{one forward pass} (or forward+backward) through the policy network for a single input.
+We factor it out because it depends entirely on the network architecture, not the RL algorithm itself.
+
+The same RL algorithm (e.g.\ PPO) has vastly different wall-clock costs depending on whether the policy is a 2-layer MLP or a 7-billion-parameter transformer.
+
+%% ============================================================
+\section{Fully Connected Layer (Dense / Linear)}
+%% ============================================================
+
+A single linear layer maps input $\mathbf{x} \in \mathbb{R}^{d_{\text{in}}}$ to output $\mathbf{y} \in \mathbb{R}^{d_{\text{out}}}$:
+\[
+\mathbf{y} = \mathbf{W}\mathbf{x} + \mathbf{b}, \qquad \mathbf{W} \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}
+\]
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lll}
+\toprule
+\textbf{Operation} & \textbf{FLOPs} & \textbf{Why} \\
+\midrule
+Forward & $2 \cdot d_{\text{in}} \cdot d_{\text{out}}$ & matrix--vector multiply ($d_{\text{in}}$ multiply-adds $\times$ $d_{\text{out}}$ outputs) \\
+Grad w.r.t.\ input ($\nabla_{\mathbf{x}}$) & $2 \cdot d_{\text{in}} \cdot d_{\text{out}}$ & $\mathbf{W}^\top \nabla_{\mathbf{y}}$ (same shape multiply) \\
+Grad w.r.t.\ weights ($\nabla_{\mathbf{W}}$) & $2 \cdot d_{\text{in}} \cdot d_{\text{out}}$ & outer product $\nabla_{\mathbf{y}} \otimes \mathbf{x}$ \\
+\midrule
+\textbf{Total (fwd + bwd)} & $\mathbf{6 \cdot d_{\text{in}} \cdot d_{\text{out}}}$ & backward $\approx$ 2$\times$ forward \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textit{Rule of thumb:} backward pass $\approx$ 2$\times$ forward, because it computes two matrix products (input gradient + weight gradient) vs.\ one in the forward pass.
+
+%% ============================================================
+\section{MLP (Multi-Layer Perceptron)}
+%% ============================================================
+
+An MLP with $L$ layers and widths $d_0, d_1, \ldots, d_L$ (where $d_0 = d_{\text{in}}$, $d_L = d_{\text{out}}$):
+
+\[
+C_{\text{MLP}}^{\text{fwd}} = \sum_{l=1}^{L} 2 \cdot d_{l-1} \cdot d_l
+\qquad\qquad
+C_{\text{MLP}}^{\text{fwd+bwd}} = \sum_{l=1}^{L} 6 \cdot d_{l-1} \cdot d_l
+\]
+
+\textbf{Example} (typical PPO on MuJoCo):
+\begin{itemize}[nosep]
+\item Architecture: $d_{\text{obs}}=17 \to 64 \to 64 \to d_{\text{act}}=6$ (2 hidden layers)
+\item Forward: $2(17 \!\cdot\! 64 + 64 \!\cdot\! 64 + 64 \!\cdot\! 6) = 2(1088 + 4096 + 384) = 11{,}136$ FLOPs
+\item Forward + backward: $\approx 33{,}408$ FLOPs
+\item \textit{This is tiny --- the environment simulation step typically dominates.}
+\end{itemize}
+
+%% ============================================================
+\section{Transformer Layer}
+%% ============================================================
+
+A single transformer layer has two sub-blocks: multi-head self-attention (MHSA) and a feed-forward network (FFN).
+Let $n$ = sequence length, $d$ = hidden dimension, $d_{\text{ff}}$ = FFN intermediate width (typically $4d$), $h$ = number of attention heads.
+
+\subsection{Self-Attention}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lll}
+\toprule
+\textbf{Step} & \textbf{FLOPs} & \textbf{Operation} \\
+\midrule
+QKV projections & $3 \times 2nd^2$ & three linear layers: $\mathbf{Q}, \mathbf{K}, \mathbf{V} = \mathbf{X}\mathbf{W}_Q, \mathbf{X}\mathbf{W}_K, \mathbf{X}\mathbf{W}_V$ \\
+Attention scores & $2n^2 d$ & $\mathbf{Q}\mathbf{K}^\top \in \mathbb{R}^{n \times n}$ \\
+Weighted values & $2n^2 d$ & $\text{softmax}(\cdot) \cdot \mathbf{V}$ \\
+Output projection & $2nd^2$ & $\mathbf{W}_O$ projection \\
+\midrule
+\textbf{Total MHSA (fwd)} & $8nd^2 + 4n^2 d$ & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Feed-Forward Network}
+
+Two linear layers with an activation in between: $\text{FFN}(\mathbf{x}) = \mathbf{W}_2 \,\sigma(\mathbf{W}_1 \mathbf{x})$.
+
+\[
+C_{\text{FFN}}^{\text{fwd}} = 2 \times 2 \cdot n \cdot d \cdot d_{\text{ff}} = 4nd \cdot d_{\text{ff}}
+\]
+
+With $d_{\text{ff}} = 4d$: $C_{\text{FFN}}^{\text{fwd}} = 16nd^2$.
+
+\subsection{One Transformer Layer (Total)}
+
+\[
+C_{\text{layer}}^{\text{fwd}} = \underbrace{8nd^2 + 4n^2 d}_{\text{MHSA}} + \underbrace{4nd \cdot d_{\text{ff}}}_{\text{FFN}}
+\]
+
+With $d_{\text{ff}} = 4d$:
+\[
+C_{\text{layer}}^{\text{fwd}} = 24nd^2 + 4n^2 d
+\]
+
+For the full model with $L_{\text{layers}}$ transformer layers:
+\[
+\boxed{C_{\text{transformer}}^{\text{fwd}} \approx L_{\text{layers}} \cdot (24nd^2 + 4n^2 d)}
+\]
+
+Backward $\approx 2\times$:
+\[
+C_{\text{transformer}}^{\text{fwd+bwd}} \approx L_{\text{layers}} \cdot (72nd^2 + 12n^2 d)
+\]
+
+\subsection{Which Term Dominates?}
+
+The two terms scale differently with sequence length $n$:
+\begin{itemize}[nosep]
+\item $24nd^2$: linear in $n$, dominates when $n < 6d$ (short sequences)
+\item $4n^2 d$: quadratic in $n$, dominates when $n > 6d$ (long sequences)
+\end{itemize}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{lccl}
+\toprule
+\textbf{Model} & $d$ & \textbf{Crossover} $n \approx 6d$ & \textbf{Regime for typical RL} \\
+\midrule
+GPT-2 Small & 768 & $\sim$4,608 & FFN-dominated (ctx $\leq$ 1024) \\
+LLaMA 7B & 4,096 & $\sim$24,576 & FFN-dominated (ctx $\leq$ 4096) \\
+LLaMA 70B & 8,192 & $\sim$49,152 & FFN-dominated (ctx $\leq$ 8192) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textit{Takeaway:} For most LLM-based RL (GRPO, CISPO), sequence lengths are well below the crossover point, so the FFN terms ($\propto nd^2$) dominate and $C_\pi$ scales linearly with sequence length.
+
+%% ============================================================
+\section{CNN (Convolutional Neural Network)}
+%% ============================================================
+
+For a convolutional layer with kernel size $k$, input channels $c_{\text{in}}$, output channels $c_{\text{out}}$, and spatial output size $h_{\text{out}} \times w_{\text{out}}$:
+
+\[
+C_{\text{conv}}^{\text{fwd}} = 2 \cdot k^2 \cdot c_{\text{in}} \cdot c_{\text{out}} \cdot h_{\text{out}} \cdot w_{\text{out}}
+\]
+
+\textbf{Example} (PPO on Atari, Nature DQN architecture):
+\begin{itemize}[nosep]
+\item Input: $84 \times 84 \times 4$ (stacked grayscale frames)
+\item Conv layers: $8{\times}8{\times}32$, $4{\times}4{\times}64$, $3{\times}3{\times}64$, then FC $3136 \to 512 \to d_{\text{act}}$
+\item Total forward $\approx$ 30M FLOPs
+\item \textit{Much larger than MLP but still small vs.\ transformer.}
+\end{itemize}
+
+%% ============================================================
+\section{Comparison Across RL Settings}
+%% ============================================================
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{llrrl}
+\toprule
+\textbf{Setting} & \textbf{Architecture} & \textbf{$C_\pi^{\text{fwd}}$} & \textbf{$C_\pi^{\text{fwd+bwd}}$} & \textbf{Bottleneck} \\
+\midrule
+PPO (MuJoCo) & MLP $64{\times}64$ & $\sim$11K & $\sim$33K & Environment step \\
+PPO (Atari) & CNN + FC & $\sim$30M & $\sim$90M & Balanced \\
+GRPO (Gemma 2B) & Transformer 18L, $d\!=\!2048$ & $\sim$4T & $\sim$12T & Neural pass \\
+GRPO (LLaMA 7B) & Transformer 32L, $d\!=\!4096$ & $\sim$14T & $\sim$42T & Neural pass \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textit{T = tera ($10^{12}$) FLOPs per token $\times$ sequence length.}\\[6pt]
+This explains why:
+\begin{itemize}[nosep]
+\item PPO's Phase 2 (GAE, $\bigO(NT)$ arithmetic) is negligible --- even with $N\!=\!64$ actors and $T\!=\!2048$ steps, it's $\sim$130K adds vs.\ millions of neural FLOPs.
+\item GRPO/CISPO Phase 3 dominates everything --- $K$ epochs of forward+backward through a multi-billion parameter transformer dwarfs all other computation.
+\item CISPO saves one $\pi_{\text{ref}}$ forward pass per minibatch vs.\ GRPO --- meaningful when $C_\pi$ is in the trillions.
+\end{itemize}
+
+%% ============================================================
+\section{Summary}
+%% ============================================================
+
+\[
+C_\pi = \begin{cases}
+\displaystyle\sum_{l=1}^{L} 2 \cdot d_{l-1} \cdot d_l & \text{MLP (forward only)} \\[12pt]
+L_{\text{layers}} \cdot (24nd^2 + 4n^2 d) & \text{Transformer (forward only, $d_{\text{ff}} = 4d$)} \\[12pt]
+\displaystyle\sum_{l=1}^{L} 2 k_l^2 c_{l-1} c_l h_l w_l & \text{CNN (forward only)}
+\end{cases}
+\]
+
+Multiply by $\approx 3\times$ for forward + backward (the standard ``$C_\pi$'' in RL complexity expressions).
+
+The RL algorithm's own overhead --- looping, indexing, advantage normalization --- is $\bigO(NT)$ or $\bigO(BG)$ arithmetic.
+This is \textbf{always negligible} compared to $C_\pi$ for any neural network larger than a few hundred parameters.
+
+\end{document}

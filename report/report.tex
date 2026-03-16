@@ -167,10 +167,8 @@ plus      -0.5ex minus -.2ex}{0.5ex plus
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% header.tex (inlined)
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-\usepackage{color}
 \usepackage[top=1in,bottom=1in,left=1.2in,right=1.2in]{geometry}
 \usepackage{hyperref}
-\usepackage[small]{titlesec}
 \usepackage{array}
 \usepackage{multirow}
 \usepackage{booktabs}
@@ -179,6 +177,8 @@ plus      -0.5ex minus -.2ex}{0.5ex plus
 \usepackage{pdflscape}
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{microtype}
+\usepackage{placeins}
 
 \newcommand{\todo}[1]{\textcolor{red}{\textbf{TODO:} #1}}
 
@@ -205,7 +205,7 @@ plus      -0.5ex minus -.2ex}{0.5ex plus
 \begin{document}
 \maketitle
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{p{2.5cm}p{5.5cm}p{5.5cm}}
 \toprule
@@ -222,7 +222,7 @@ CUDA / cuDNN & 12.2 / 9.1 & 12.8 / 9.1 \\
 Batch sizing & \multicolumn{2}{c}{Automatic per-config tuning to maximize VRAM utilization} \\
 \bottomrule
 \end{tabular}
-\caption{Hardware and software environment used for all experiments. Parts 1 \& 2 (T5 training) ran on VM\,1; Part 3 (LLM prompting) ran on VM\,2.}
+\caption{Hardware and software environment.}
 \label{tab:hardware}
 \end{table}
 
@@ -230,7 +230,7 @@ Batch sizing & \multicolumn{2}{c}{Automatic per-config tuning to maximize VRAM u
 
 \autoref{tab:data_stats_before} reports the raw dataset statistics before any model-specific preprocessing. All token counts use the T5 tokenizer (\texttt{T5TokenizerFast} from \texttt{google-t5/t5-small}). Vocabulary sizes are computed over unique whitespace-delimited words.
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{lcc}
 \toprule
@@ -243,13 +243,13 @@ Vocabulary size (natural language) & 868 & 444 \\
 Vocabulary size (SQL) & 644 & 393 \\
 \bottomrule
 \end{tabular}
-\caption{Data statistics before any pre-processing. Token counts are measured using the T5 tokenizer.}
+\caption{Data statistics before pre-processing (T5 tokenizer).}
 \label{tab:data_stats_before}
 \end{table}
 
 \autoref{tab:data_stats_after} shows per-model statistics after preprocessing. The T5 fine-tuned model prepends table names from the flight database schema to each natural language input (e.g., ``tables: city, airport, flight, ...''), adding approximately 93 tokens per example. The T5 from-scratch model receives raw NL input without any schema augmentation. Both models restrict the decoder output vocabulary to 598 SQL-relevant tokens (SQL keywords, table/column names, operators, and literals extracted from the training data).
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{lcc}
 \toprule
@@ -272,17 +272,14 @@ Decoder token vocab size & 556 (598 restricted) & 396 (598 restricted) \\
 \label{tab:data_stats_after}
 \end{table}
 
-
-
-\newpage
-
+\FloatBarrier
 \section{T5 Fine-tuning and Training From Scratch (8pt)}\label{sec:t5}
 
 \subsection{Supervised Fine-tuning (SFT)}\label{sec:t5:sft}
 
 \autoref{tab:t5_design} describes the data processing, tokenization, architecture, and hyperparameters for the fine-tuned and from-scratch T5 models.
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \small
 \begin{tabular}{p{3cm}p{10.5cm}}
@@ -298,18 +295,14 @@ Constant parameters & Optimizer, scheduler, gradient clipping, loss function, be
 \end{tabular}
 \caption{Design choices for T5 fine-tuned and from-scratch models.}
 \label{tab:t5_design}
-\label{tab:t5_results_ft}
-\label{tab:t5_results_scratch}
 \end{table}
 
-
-\newpage
 
 \subsection{Direct Preference Optimization (DPO)}\label{sec:dpo}
 
 \autoref{tab:dpo_design} describes the DPO post-training pipeline applied on top of the best SFT model: the T5-base ``Base sweep best'' checkpoint (\texttt{google-t5/t5-base}, 222M params; see \autoref{tab:results_t5_base}, F1\,=\,85.96\%, SQL EM\,=\,73.39\%). DPO \textit{(Rafailov et al., 2023)} optimizes the policy to prefer ``chosen'' over ``rejected'' completions without training a separate reward model, using the SFT checkpoint as both initialization and frozen reference. Results are reported in Section~\ref{sec:results}.
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \small
 \begin{tabular}{p{3cm}p{10.5cm}}
@@ -329,64 +322,43 @@ Constant parameters & Optimizer (AdamW), beam search decoding (num\_beams\,=\,4)
 
 \subsection{RL Fine-Tuning (PPO, GRPO, CISPO)}\label{sec:rl}
 
-We explored three online reinforcement learning algorithms applied to the best T5-base SFT checkpoint (\autoref{tab:results_t5_base}, F1\,=\,85.96\%) via LoRA adapters ($r$\,=\,32, $\alpha$\,=\,64, targeting q/k/v/o projections, 3.08\% trainable parameters). This investigation was motivated by recent work on RL-based LLM alignment: \texttt{GRPO} from DeepSeekMath, \texttt{CISPO} from MiniMax-M1, and classic \texttt{PPO} with a learned value head baseline. To our knowledge, no published work applies these algorithms to T5 encoder-decoder models for NL-to-SQL.
 
-\paragraph{Methodology.} For each query, $G$\,=\,4 SQL completions are generated via constrained decoding (temperature\,=\,0.7, top-$k$\,=\,50). Each completion receives a graded execution reward: +1.0 (exact record match), +0.5 (partial overlap), $-$0.5 (no overlap), $-$1.0 (SQL error). Advantages are computed group-relative for GRPO/CISPO and via a learned value head for PPO. Training uses a random subset of 200--500 queries per epoch with early stopping on dev Record F1.
-
-\begin{itemize}
-  \item \textbf{PPO}: Clipped surrogate objective with a learned value head (MLP on mean-pooled encoder hidden states) as baseline; entropy bonus ($\alpha$\,=\,0.01) for exploration.
-  \item \textbf{GRPO}: PPO-style clipped surrogate with group-relative advantage normalization (no critic network). KL penalty ($\beta$\,=\,0.05).
-  \item \textbf{CISPO}: Detached clamped importance sampling weights that preserve gradient flow for all tokens. No KL penalty ($\beta$\,=\,0).
-\end{itemize}
-
-\paragraph{Results.} \autoref{tab:rl_results} reports dev set metrics for all three algorithms.
-
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
-\begin{tabular}{lccccc}
-  \toprule
-  System & SQL EM (\%) & Record EM (\%) & Record F1 (\%) & KL Drift & Time \\
-  \midrule
-  SFT baseline (T5-base) & 73.39 & 84.76 & 85.96 & -- & -- \\[4pt]
-  PPO + Value Head & 73.39 & 84.76 & 85.96 & $-$6.55 & 46 min \\
-  GRPO & 73.39 & 84.76 & 85.96 & $-$9.88 & 35 min \\
-  CISPO & 73.39 & 84.76 & 85.96 & +0.21 & 45 min \\
-  \bottomrule
+\small
+\begin{tabular}{p{3cm}p{10.5cm}}
+\toprule
+Design choice & Description \\
+\midrule
+Base model & T5-base ``Base sweep best'' (222M params, F1\,=\,85.96\%). Used as frozen reference for KL penalty; LoRA adapter applied on top as trainable policy. \\
+Adapter & LoRA $r$\,=\,32, $\alpha$\,=\,64, targeting q/k/v/o projections (6.86M trainable params, 3.08\% of total). \\
+Sampling & $G$\,=\,4 completions per query via constrained decoding (temperature\,=\,0.7, top-$k$\,=\,50, max\_new\_tokens\,=\,512, restricted 598-token SQL vocab). Sub-batch generation (chunk size 16) to bound peak VRAM during sequence generation. \\
+Reward & Execution-based graded: +1.0 (exact record match), +0.5 (partial overlap), $-$0.5 (no record overlap), $-$1.0 (SQL execution error). Threaded reward computation (128 workers) with in-memory SQLite. \\
+Algorithms & \textbf{PPO:} clipped surrogate + learned value head (MLP on mean-pooled encoder states, zero-initialized). \textbf{GRPO:} group-relative advantages, no critic, KL penalty. \textbf{CISPO:} detached clamped IS weights preserving gradient flow. \\
+Varying parameters & Algorithm (PPO/GRPO/CISPO), train subset size (200--500 queries/iteration), KL penalty $\beta \in \{0, 0.02, 0.05\}$. \\
+Constant parameters & Optimizer (AdamW, WD\,=\,0.01), LR\,=\,$5 \times 10^{-5}$, clip $\epsilon$\,=\,0.2, gradient clipping (max norm\,=\,1.0), patience\,=\,5 eval cycles (tolerance\,=\,0.005), bf16 mixed precision, encoder output caching. \\
+\bottomrule
 \end{tabular}
-\caption{RL fine-tuning results on T5-base (Section~\ref{sec:rl}). All three algorithms match but do not improve the SFT baseline (85.96\% F1). KL Drift = KL divergence from the reference policy at early stopping.}
-\label{tab:rl_results}
+\caption{Design choices for RL post-training on T5-base.}
+\label{tab:rl_design}
 \end{table}
 
-\paragraph{Analysis.} None of the three RL algorithms improved over the SFT baseline. We identify four contributing factors:
+\begin{itemize}
+  \item \textbf{PPO} \textit{(Schulman et al., 2017)}: Clipped surrogate objective with a learned value head (2-layer MLP on mean-pooled encoder hidden states, zero-initialized) as baseline; entropy bonus ($\alpha$\,=\,0.01) for exploration; KL penalty ($\beta$\,=\,0.02).
+  \item \textbf{GRPO} \textit{(Shao et al., 2024)}: PPO-style clipped surrogate with group-relative advantage normalization (no critic network). Stronger KL penalty ($\beta$\,=\,0.05). Trained on larger subset (500 queries/iteration).
+  \item \textbf{CISPO} \textit{(MiniMax, 2025)}: Detached clamped importance sampling weights that preserve gradient flow for all tokens regardless of ratio magnitude. No KL penalty ($\beta$\,=\,0).
+\end{itemize}
 
-\begin{enumerate}
-  \item \textbf{Reward sparsity.} The base model already achieves F1\,=\,85.96\%. Most generated completions receive +1.0 reward, creating 50--64\% ``dead groups'' (zero reward variance). The RL gradient signal is too sparse to improve an already-strong model.
+Results are reported in Section~\ref{sec:results}.
 
-  \item \textbf{Single-step ratio reduction.} With one gradient step per rollout batch, the importance sampling ratio is always 1.0. PPO clipping (clip\_fraction\,=\,0.000 across all runs) never activates. All three algorithms effectively reduce to vanilla REINFORCE with different advantage baselines.
-
-  \item \textbf{Policy drift without improvement.} PPO and GRPO show increasing negative KL divergence ($-$6.55 and $-$9.88 by early stopping), meaning the policy explores lower-probability regions without finding better outputs. CISPO's detached clipping keeps KL near zero (+0.21) but makes effectively zero policy updates (loss $\approx -$0.008).
-
-  \item \textbf{Coarse reward granularity.} Four discrete reward levels cannot distinguish ``almost correct'' from ``completely wrong'' SQL. A continuous reward based on record set Jaccard similarity might provide finer gradient signal.
-\end{enumerate}
-
-These results suggest that online RL is not effective for improving already-strong NL-to-SQL models on small datasets ($\sim$4K queries). The restricted 598-token SQL vocabulary already constrains the output space, limiting the model's ability to explore meaningfully different SQL structures. Rejection sampling fine-tuning (generate, filter by reward, SFT on filtered outputs) may be more practical for post-training improvement in this setting.
-
-\newpage
-
+\FloatBarrier
 \section{Large Language Model (LLM) Prompting (14pt)}\label{sec:llm}
 
 \subsection{In-Context Learning (ICL)}\label{sec:llm:icl}
 
-\paragraph{Instructions:} Provide in \autoref{tab:icl_prompts} the instruction prompt(s) that you used for ICL.
+\autoref{tab:icl_prompts} shows the instruction prompts used for zero- and few-shot ICL.
 
-If the prompt you used for zero- and few-shot prompting is identical, except for the examples, there's no need to repeat it.
-If you made small modifications between zero- and few-shot, please provide them separately.
-For all entries, you need to specify the corresponding values of $k$.
-
-
-
-
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{p{1cm}p{12cm}}
 \toprule
@@ -418,14 +390,12 @@ For all entries, you need to specify the corresponding values of $k$.
     & \texttt{<start\_of\_turn>model} \\
 \bottomrule
 \end{tabular}
-\caption{Instruction prompts used for zero- and few-shot prompting. The prompt uses the Gemma chat format. The database schema provides all 25 table definitions as CREATE TABLE DDL. For $k \geq 1$, examples are inserted between the instructions and the target question. The same template is used for both random and BM25 example selection; only the choice of examples differs.}
+\caption{Instruction prompts for zero- and few-shot ICL (Gemma chat format).}
 \label{tab:icl_prompts}
 \end{table}
 
 
-\paragraph{Example selections:} Please provide a clear, detailed, and succinct description of how you selected the examples when $k > 0$.
-
-We evaluated two example selection strategies for $k > 0$:
+\paragraph{Example selection.} We evaluated two example selection strategies for $k > 0$:
 
 \textbf{Random selection:} $k$ examples are sampled uniformly at random from the 4{,}225 training pairs. The same fixed set is used for all queries in a given run (seed = 42).
 
@@ -433,25 +403,11 @@ We evaluated two example selection strategies for $k > 0$:
 
 
 
-\newpage
-
-
-
 \subsection{Best Prompt and Ablation Study}
 
+\autoref{tab:best_prompt} shows the best prompt (BM25 $k=3$). \autoref{tab:ablation_explanation} describes the ablation variants.
 
-
-\paragraph{Instructions:} Report the best prompt you used in \autoref{tab:best_prompt}.
-If the best prompt you used is the same as the one specified in \autoref{tab:icl_prompts}, you can just copy the best prompt and label it.
-If it is different (e.g. you designed another prompt that is better), you should clearly describe how you created it and what are the methods you used in the caption.
-
-You will also need to clearly and succintly describe in \autoref{tab:ablation_explanation} the ablation experiments that you performed by removing different parts of the prompt.
-For that, you need to first highlight the parts of the prompt that you ablated for each experiment in a distinct color\footnote{\url{https://www.overleaf.com/learn/latex/Using_colors_in_LaTeX}}, as shows the placeholder example in \autoref{tab:icl_prompts}, and second, provide the description by referring to the highlighted part.
-When reporting your results in \autoref{tab:results_llm}, you will need to refer to your ablations variants.
-
-
-
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{p{13.5cm}}
 \toprule
@@ -477,13 +433,11 @@ When reporting your results in \autoref{tab:results_llm}, you will need to refer
     \texttt{<start\_of\_turn>model} \\
 \bottomrule
 \end{tabular}
-\caption{The best prompt (BM25 $k=3$). Same template as \autoref{tab:icl_prompts} with $k=3$ BM25 per-query selected examples. \textcolor{Blue}{Blue} = database schema (ablated in ``No schema''). \textcolor{ForestGreen}{Green} = task instructions (ablated in ``No instructions'').}
+\caption{Best prompt (BM25 $k=3$). \textcolor{Blue}{Blue} = schema (ablated). \textcolor{ForestGreen}{Green} = instructions (ablated).}
 \label{tab:best_prompt}
 \end{table}
 
-
-
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{p{2cm}p{10cm}}
 \toprule
@@ -496,28 +450,18 @@ When reporting your results in \autoref{tab:results_llm}, you will need to refer
 -- & \textbf{Schema only:} Removed both \textcolor{ForestGreen}{instructions} and all examples ($k=0$), keeping only the \textcolor{Blue}{schema}. The model receives table definitions but no task framing or demonstrations. Despite the lowest error rate (70\%), F1 is worst at 11.37\% because the model generates syntactically valid but semantically incorrect SQL. \\
 \bottomrule
 \end{tabular}
-\caption{Ablation variants applied to the best prompt (BM25 $k=3$). Each condition removes one or more components to measure its contribution to overall performance.}
+\caption{Ablation variants for the best prompt (BM25 $k=3$).}
 \label{tab:ablation_explanation}
 \end{table}
 
 
 
-\newpage
-
-
-
+\FloatBarrier
 \section{Results and Analysis (20pt)}\label{sec:results}
 
-\paragraph{Quantitative Results:} Use \autoref{tab:results_t5_small}, \autoref{tab:results_t5_base}, and \autoref{tab:results_llm} to report your test and development set results.
-Your test results should match with the results on gradescope.
-For the development set, you should also report results from experiments you conducted to arrive at your final configuration.
-When reporting experiments, you should replace "variant" with brief and meaningful descriptions of whatever hyperparameter or setting that you varied.
-For ICL, you should specify what is the parameter $k$ used, and what the full model corresponds to. For T5, the full model refers to the best model you described in Section \ref{sec:t5}.
-For T5, if you experimented with different design choices, you can add rows specifying the variants and what you tried.
-The text in gray is only for example purpose, and should be removed and replaced with your own choices.
-You may add more rows if needed.
+\autoref{tab:constant_params} lists constant hyperparameters. \autoref{tab:results_t5_small}, \autoref{tab:results_t5_base}, and \autoref{tab:results_llm} report dev and test results.
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{p{4.5cm}p{9cm}}
 \toprule
@@ -536,16 +480,15 @@ Test batch size & 16 \\
 SQL evaluation threads & 128 \\
 \bottomrule
 \end{tabular}
-\caption{Constant hyperparameters shared across all T5 training runs (Parts 1 \& 2).}
+\caption{Constant hyperparameters for all T5 runs.}
 \label{tab:constant_params}
 \end{table}
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\makebox[\textwidth][c]{%
-\begin{tabular}{>{\raggedright\arraybackslash}p{3cm}crccccccccccc}
+\resizebox{\textwidth}{!}{%
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.5cm}crccccccccccc}
   \toprule
   System & Method & Params (M) & LR & Batch & Schema & Dropout & WD & Beams & Epochs & Time & Query EM (\%) & F1 (\%) \\
   \midrule
@@ -577,17 +520,16 @@ SQL evaluation threads & 128 \\
   T5 from scratch         & Full & 60.5 & 3e-4 & 32  & --         & 0.1 & 0.01 & 4 & 98  & --   & 0.00 & 59.16 \\
   \bottomrule
 \end{tabular}%
-}% end makebox
-\caption{T5-small development and test results (Parts 1 \& 2, trained on VM\,1). Params (M) = tunable parameters in millions. WD = weight decay, Beams = num\_beams during decoding. Best dev result in bold.}
+}
+\caption{T5-small dev and test results. Best dev result in bold.}
 \label{tab:results_t5_small}
 \end{table}
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\makebox[\textwidth][c]{%
-\begin{tabular}{>{\raggedright\arraybackslash}p{3cm}crccccccccccc}
+\resizebox{\textwidth}{!}{%
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.5cm}crccccccccccc}
   \toprule
   System & Method & Params (M) & LR & Schema & Dropout & Label Sm. & WD & Beams & Epochs & Time & Query EM (\%) & F1 (\%) \\
   \midrule
@@ -608,8 +550,8 @@ SQL evaluation threads & 128 \\
   Base LoRA $r$=16 (q/v)   & LoRA & 1.8 & 3.07e-5 & --         & 0.05 & 0    & 0.021 & 4 & 71  & 57m  & 32.00 & 55.51 \\
   \bottomrule
 \end{tabular}%
-}% end makebox
-\caption{T5-base fine-tuning development results from W\&B random sweep (222M total params, batch = 32, trained on VM\,2). WD = weight decay, Beams = num\_beams during decoding. Params (M) = tunable parameters in millions. Best result in bold.}
+}
+\caption{T5-base dev results (W\&B sweep). Best result in bold.}
 \label{tab:results_t5_base}
 \end{table}
 
@@ -618,14 +560,14 @@ SQL evaluation threads & 128 \\
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{../media/training_curves.pdf}
-\caption{Training curves for two best fine-tuned models. \textbf{Left:} T5-small ``Restricted v3'' (full fine-tune, LR\,=\,3e-4, batch\,=\,64, schema augmentation, dropout\,=\,0.1, 79 epochs; see \autoref{tab:results_t5_small}). \textbf{Right:} T5-base ``Base sweep best'' (full fine-tune, LR\,=\,6.19e-5, batch\,=\,32, schema augmentation, dropout\,=\,0.05, label smoothing\,=\,0.15, 79 epochs; see \autoref{tab:results_t5_base}). Gray: training loss (left axis). Orange dashes: validation loss (left axis). Blue/red circles: Record F1 on a dev subset (right axis). Purple triangles (T5-base only): SQL Exact Match on a dev subset (right axis). Diamonds: final full dev set metrics. Both models converge within their time budgets, with T5-base achieving higher F1 (85.96\% vs.\ 79.60\%).}
+\caption{Training curves for T5-small (left) and T5-base (right) best models.}
 \label{fig:training_curves}
 \end{figure}
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\textwidth]{../media/dev_f1_comparison.pdf}
-\caption{Record F1 on the dev set across all T5-small variants. Full fine-tuning with schema augmentation (Restricted v3) achieves the highest F1 (79.6\%). LoRA with warm-start initialization (73.4\%) approaches full fine-tuning performance. MLP projection heads underperform at 8.7\%.}
+\caption{Dev Record F1 across all T5-small variants.}
 \label{fig:dev_f1_comparison}
 \end{figure}
 
@@ -633,7 +575,7 @@ SQL evaluation threads & 128 \\
 \paragraph{DPO post-training results.}
 \autoref{tab:dpo_results} reports DPO results (Section~\ref{sec:dpo}) alongside the SFT baseline. DPO did not improve over the SFT checkpoint.
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \begin{tabular}{lccc}
   \toprule
@@ -656,20 +598,74 @@ SQL evaluation threads & 128 \\
   DPO (best checkpoint) & -- & -- & -- \\
   \bottomrule
 \end{tabular}
-\caption{DPO results on T5-base (Section~\ref{sec:dpo}). The SFT baseline is ``Base sweep best'' from \autoref{tab:results_t5_base}. \textbf{Full fine-tune:} training peaked at epoch 2 (F1\,=\,84.82\%) before degrading; early stopping triggered at epoch 7. The final beam-search evaluation of the best checkpoint (82.42\%) fell further below the SFT baseline (85.96\%). \textbf{LoRA:} the low learning rate (1.16e-7) caused effectively no policy update over 6 epochs---dev metrics remained identical to the SFT baseline. However, the final beam-search evaluation dropped to 75.75\%, a 10.2\,pp gap attributed to LoRA merge-and-save corruption and the greedy-vs-beam decoding mismatch (see \autoref{tab:dpo_issues}).}
+\caption{DPO results on T5-base. Neither trial improved over the SFT baseline.}
 \label{tab:dpo_results}
 \end{table}
 
+\begin{minipage}{\textwidth}
 Four factors likely explain why DPO underperformed:
-\begin{enumerate}
+\begin{enumerate}\itemsep0pt\parsep0pt
   \item \textbf{Narrow output distribution.} The restricted 598-token SQL vocabulary already constrains the model to a small output space. DPO's advantage of steering away from bad outputs is diminished when the model has few degrees of freedom.
   \item \textbf{Preference data quality.} Rejected candidates were either model-generated errors (Phase A) or rule-based perturbations (Phase B). Neither captures the subtle SQL structural errors (wrong JOIN patterns, missing subqueries) that dominate the remaining 14\% SFT error rate (\autoref{tab:qualitative}).
   \item \textbf{Reward hacking / overfitting (full fine-tune).} The reward margin grew from 1.6 to 12.2 over 8 epochs while dev F1 peaked at epoch 2 and collapsed to 71.7\% by epoch 7. The policy learned to maximize the DPO reward signal without improving SQL correctness, a form of reward hacking on the fixed preference dataset.
   \item \textbf{Insufficient LoRA learning rate.} The LoRA trial used LR\,=\,1.16e-7, which was too low to move the adapter weights meaningfully---reward accuracy reached only 54\% (barely above random) and dev metrics remained identical to the SFT baseline across all 6 epochs. The 10.2\,pp F1 drop at final evaluation (85.96\%$\to$75.75\%) is attributed to LoRA merge-and-save corruption and the training-time greedy vs.\ final beam-search decoding mismatch.
 \end{enumerate}
+\end{minipage}
 
 
-\begin{table}[h!]
+\paragraph{RL post-training results.}
+\autoref{tab:rl_results} and \autoref{tab:rl_detailed} report RL fine-tuning results (Section~\ref{sec:rl}). None of the three algorithms improved over the SFT baseline.
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lccccc}
+  \toprule
+  System & SQL EM (\%) & Record EM (\%) & Record F1 (\%) & KL Drift & Time \\
+  \midrule
+  SFT baseline (T5-base) & 73.39 & 84.76 & 85.96 & -- & -- \\[4pt]
+  PPO + Value Head & 73.39 & 84.76 & 85.96 & $-$6.55 & 46 min \\
+  GRPO & 73.39 & 84.76 & 85.96 & $-$9.88 & 35 min \\
+  CISPO & 73.39 & 84.76 & 85.96 & +0.21 & 45 min \\
+  \bottomrule
+\end{tabular}
+\caption{RL fine-tuning results on T5-base. No algorithm improved over SFT baseline.}
+\label{tab:rl_results}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{llccccc}
+  \toprule
+  Algorithm & Iter. & Loss & Reward & Dead Groups & KL & Dev F1 (\%) \\
+  \midrule
+  \multirow{4}{*}{PPO} & 0 & $-$0.28 & 0.536 & 0.640 & +0.02 & 85.96 \\
+  & 1 & $-$0.22 & 0.541 & 0.530 & $-$0.41 & 85.96 \\
+  & 2 & $-$0.26 & 0.539 & 0.590 & $-$2.59 & 85.75 \\
+  & 3 & $-$0.39 & 0.455 & 0.525 & $-$6.55 & 85.67 \\[4pt]
+  \multirow{2}{*}{GRPO} & 0 & $-$0.09 & 0.559 & 0.580 & $-$1.87 & 85.96 \\
+  & 1 & $-$0.49 & 0.411 & 0.490 & $-$9.88 & 85.96 \\[4pt]
+  \multirow{3}{*}{CISPO} & 0 & $-$0.01 & 0.534 & 0.620 & +0.03 & 85.96 \\
+  & 1 & $-$0.01 & 0.531 & 0.590 & +0.08 & 85.96 \\
+  & 2 & $-$0.01 & 0.528 & 0.610 & +0.21 & 85.96 \\
+  \bottomrule
+\end{tabular}
+\caption{Per-iteration RL training dynamics (clip\_frac\,=\,0.000 throughout, omitted).}
+\label{tab:rl_detailed}
+\end{table}
+
+Four factors explain why RL post-training was ineffective:
+\begin{enumerate}
+  \item \textbf{Reward sparsity.} The base model already achieves F1\,=\,85.96\%. Most generated completions receive +1.0 reward, creating 50--64\% ``dead groups'' (zero reward variance, zero gradient). The RL signal is too sparse to improve an already-strong model.
+
+  \item \textbf{Single-step ratio = REINFORCE.} With one gradient step per rollout batch, the importance sampling ratio $\frac{\pi_\theta(a|s)}{\pi_{\theta_\text{old}}(a|s)}$ is always 1.0 because $\theta = \theta_\text{old}$. PPO clipping (clip\_frac\,=\,0.000 across all 9 iterations) never activates. All three algorithms effectively reduce to vanilla REINFORCE with different advantage baselines. Multi-step updates ($>$1 gradient step per rollout) would be needed for clipping to matter.
+
+  \item \textbf{Policy drift without improvement.} PPO and GRPO show increasing negative KL divergence ($-$6.55 and $-$9.88 by early stopping), meaning the policy drifts to lower-probability regions of the reference model without finding better outputs. CISPO's detached clamping keeps KL near zero (+0.21) but produces effectively zero policy updates---the loss stabilizes at $-$0.01 with no measurable parameter change.
+
+  \item \textbf{Coarse reward granularity.} Four discrete reward levels cannot distinguish ``almost correct'' from ``completely wrong'' SQL. A continuous reward based on record set Jaccard similarity might provide finer gradient signal for the 14\% of queries where the model currently errs.
+\end{enumerate}
+
+
+\begin{table}[htbp]
 \centering
 \begin{tabular}{lcc}
   \toprule
@@ -693,90 +689,76 @@ Four factors likely explain why DPO underperformed:
   BM25 $k=3$                  & 0.00 & 13.93 \\
   \bottomrule
 \end{tabular}
-\caption{LLM prompting development and test results (Part 3). Query EM and Record F1 on the development set for Gemma-2B with various $k$-shot and example selection strategies. Best dev result in bold. Ablations remove individual prompt components from the best (BM25 $k=3$) configuration.}
+\caption{LLM prompting dev and test results (Gemma-2B). Best dev result in bold.}
 \label{tab:results_llm}
 \end{table}
 
 
-\paragraph{ICL sensitivity to $k$:} For ICL, please provide a plot of the Record F1 on the development set that the model achieved with different values of $k$. The x-axis should be $k$, and the y-axis the Record F1. The prompts and examples used for this plot should correspond to the ones you described in Subsection \ref{sec:llm:icl}.
+\autoref{fig:icl_sensitivity} shows Record F1 sensitivity to the number of in-context examples $k$.
 
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.65\textwidth]{../media/icl_sensitivity_k.pdf}
-\caption{ICL sensitivity to $k$ on the dev set. Random example selection (red) shows flat or slightly declining F1 as $k$ increases. BM25 per-query selection at $k=3$ (blue) achieves 17.35\%, a 45\% relative improvement over random $k=3$, demonstrating that retrieval-based example selection is critical for this task.}
+\caption{ICL sensitivity to number of examples $k$.}
 \label{fig:icl_sensitivity}
 \end{figure}
 
-\newpage
 
-\paragraph{Qualitative Error Analysis:} We identified five common error patterns across the three models, summarized in \autoref{tab:qualitative}.
+\paragraph{Qualitative error analysis.} \autoref{tab:qualitative} summarizes five common error patterns across the three models.
 
-\begin{landscape}
-\begin{table}
+\begin{table}[htbp]
   \centering
-  \small
+  \footnotesize
   \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{1.1cm}l>{\raggedright\arraybackslash}p{5.5cm}p{5cm}>{\raggedright\arraybackslash}p{3.4cm}}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{1.8cm}>{\raggedright\arraybackslash}p{1.2cm}>{\raggedright\arraybackslash}p{3.8cm}>{\raggedright\arraybackslash}p{3.8cm}>{\raggedright\arraybackslash}p{2.8cm}}
     \toprule
-    \textbf{Error Type} & \textbf{Models} & \multicolumn{2}{c}{\textbf{Example Of Error}} & \textbf{Error Description} & \textbf{Statistics} \\
+    \textbf{Error Type} & \textbf{Models} & \textbf{Example} & \textbf{Description} & \textbf{Statistics} \\
     \midrule
-    \multirow[t]{3}{2.6cm}{Missing comparison operator}
-    & \multirow[t]{3}{1.1cm}{T5-FT, T5-Scr}
-    & NL   & ``flights arriving before 6pm''
-    & \multirow[t]{3}{5cm}{Drops \texttt{<}, \texttt{>}, \texttt{<=}, \texttt{>=} from predicates, producing invalid SQL. SentencePiece treats angle brackets as special tokens.}
-    & \multirow[t]{3}{3.4cm}{T5-FT: 26/466 (5.6\%) \newline T5-Scr: 27/466 (5.8\%)} \\
-    & & GT   & \texttt{arrival\_time < 1800} & & \\
-    & & Pred & \texttt{arrival\_time \space\space 1800} & & \\[8pt]
+    Missing comparison operator
+    & T5-FT, T5-Scr
+    & NL: ``flights arriving before 6pm'' \newline GT: \texttt{arrival\_time < 1800} \newline Pred: \texttt{arrival\_time \space\space 1800}
+    & Drops \texttt{<}, \texttt{>}, \texttt{<=}, \texttt{>=} from predicates, producing invalid SQL. SentencePiece treats angle brackets as special tokens.
+    & T5-FT: 26/466 (5.6\%) \newline T5-Scr: 27/466 (5.8\%) \\
     \midrule
-    \multirow[t]{3}{2.6cm}{Query truncation}
-    & \multirow[t]{3}{1.1cm}{ICL}
-    & NL   & ``afternoon flights from washington to boston''
-    & \multirow[t]{3}{5cm}{Only a \texttt{SELECT} fragment generated, missing \texttt{FROM}/\texttt{WHERE}. Caused by Gemma 2B \texttt{max\_new\_tokens} limit.}
-    & \multirow[t]{3}{3.4cm}{ICL: 383/466 (82.2\%)} \\
-    & & GT   & \texttt{SELECT DISTINCT flight\_1.flight\_id FROM flight flight\_1 ...} & & \\
-    & & Pred & \texttt{SELECT DISTINCT flight\_1.flight\_id} & & \\[8pt]
+    Query truncation
+    & ICL
+    & NL: ``afternoon flights from washington to boston'' \newline GT: \texttt{SELECT DISTINCT flight\_1.flight\_id FROM ...} \newline Pred: \texttt{SELECT DISTINCT flight\_1.flight\_id}
+    & Only a \texttt{SELECT} fragment generated, missing \texttt{FROM}/\texttt{WHERE}. Caused by Gemma 2B \texttt{max\_new\_tokens} limit.
+    & ICL: 383/466 (82.2\%) \\
     \midrule
-    \multirow[t]{3}{2.6cm}{Wrong table/column reference}
-    & \multirow[t]{3}{1.1cm}{T5-FT, ICL}
-    & NL   & ``flight from boston to denver''
-    & \multirow[t]{3}{5cm}{References aliases or columns not in \texttt{FROM}. Model generates plausible patterns but omits table declarations.}
-    & \multirow[t]{3}{3.4cm}{T5-FT: 16/466 (3.4\%) \newline ICL: 5/466 (1.1\%)} \\
-    & & GT   & \texttt{...city city\_1, ...city city\_2} & & \\
-    & & Pred & \texttt{...city city\_2} (missing \texttt{city\_1}) & & \\[8pt]
+    Wrong table/column reference
+    & T5-FT, ICL
+    & NL: ``flight from boston to denver'' \newline GT: \texttt{...city city\_1, ...city city\_2} \newline Pred: \texttt{...city city\_2} (missing \texttt{city\_1})
+    & References aliases or columns not in \texttt{FROM}. Model generates plausible patterns but omits table declarations.
+    & T5-FT: 16/466 (3.4\%) \newline ICL: 5/466 (1.1\%) \\
     \midrule
-    \multirow[t]{3}{2.6cm}{Wrong JOIN structure}
-    & \multirow[t]{3}{1.1cm}{T5-FT, T5-Scr, ICL}
-    & NL   & ``flights from boston to SF with max stops''
-    & \multirow[t]{3}{5cm}{Executes but returns wrong records: incorrect subqueries, missing joins, or wrong aggregation on multi-table queries.}
-    & \multirow[t]{3}{3.4cm}{T5-FT: 83/466 (17.8\%) \newline T5-Scr: 144/466 (30.9\%) \newline ICL: 35/466 (7.5\%)} \\
-    & & GT   & \texttt{stops = (SELECT MAX(stops)...)} & & \\
-    & & Pred & \texttt{stops = 0} (returns 4 instead of 2) & & \\[8pt]
+    Wrong JOIN structure
+    & T5-FT, T5-Scr, ICL
+    & NL: ``flights from boston to SF with max stops'' \newline GT: \texttt{stops = (SELECT MAX(stops)...)} \newline Pred: \texttt{stops = 0} (returns 4 instead of 2)
+    & Executes but returns wrong records: incorrect subqueries, missing joins, or wrong aggregation on multi-table queries.
+    & T5-FT: 83/466 (17.8\%) \newline T5-Scr: 144/466 (30.9\%) \newline ICL: 35/466 (7.5\%) \\
     \midrule
-    \multirow[t]{3}{2.6cm}{Wrong predicate values}
-    & \multirow[t]{3}{1.1cm}{T5-FT, T5-Scr, ICL}
-    & NL   & ``flights available tomorrow from denver to philadelphia''
-    & \multirow[t]{3}{5cm}{Correct SQL structure but wrong literals in \texttt{WHERE} (month, city, time). Subset of semantic errors, identified by matching \texttt{FROM}.}
-    & \multirow[t]{3}{3.4cm}{T5-FT: 83/466 semantic \newline T5-Scr: 144/466 semantic \newline ICL: 35/466 semantic} \\
-    & & GT   & \texttt{month\_number = 1 AND day\_number = 20} & & \\
-    & & Pred & \texttt{month\_number = 2 AND day\_number = 20} & & \\
+    Wrong predicate values
+    & T5-FT, T5-Scr, ICL
+    & NL: ``flights available tomorrow from denver to philadelphia'' \newline GT: \texttt{month\_number = 1 AND day\_number = 20} \newline Pred: \texttt{month\_number = 2 AND day\_number = 20}
+    & Correct SQL structure but wrong literals in \texttt{WHERE} (month, city, time). Subset of semantic errors, identified by matching \texttt{FROM}.
+    & T5-FT: 83/466 semantic \newline T5-Scr: 144/466 semantic \newline ICL: 35/466 semantic \\
     \bottomrule
   \end{tabular}
-  \caption{Qualitative error analysis on the dev set (466 queries) for all three models. Statistics use COUNT/TOTAL format where TOTAL is the full dev set size. Categories are mutually exclusive: each query is classified into exactly one category per model.}\label{tab:qualitative}
+  \caption{Qualitative error analysis on the dev set (466 queries).}\label{tab:qualitative}
 \end{table}
-\end{landscape}
 
 
-\newpage
-
+\FloatBarrier
 \section{Engineering Issues}
 
-\autoref{tab:issues_performance} documents the performance-related engineering issues encountered during development, along with their root causes and resolutions.
+We encountered 28 engineering issues across five categories during development. \autoref{tab:issues_performance} covers performance and infrastructure issues (GPU concurrency, process hangs, sweep stability). \autoref{tab:issues_model} covers model and sweep issues (decoding bugs, checkpoint corruption, configuration errors). \autoref{tab:dpo_issues} covers DPO- and RL-specific issues.
 
-\begin{landscape}
-\begin{table}
+\begin{table}[htbp]
 \centering
-\small
-\begin{tabular}{p{3.2cm}p{8cm}p{8cm}}
+\scriptsize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{>{\raggedright}p{2.5cm}>{\raggedright}p{6.5cm}>{\raggedright\arraybackslash}p{6.5cm}}
 \toprule
 \textbf{Issue} & \textbf{Description} & \textbf{Resolution} \\
 \midrule
@@ -785,60 +767,90 @@ GPU OOM from concurrent sessions & AutoBatch maximizes VRAM for the first GPU ta
 Training process hung after completion & Training PID blocks indefinitely on \texttt{futex\_wait\_queue\_me} during \texttt{gc.collect()} / \texttt{torch.cuda.empty\_cache()} after W\&B marks the run FINISHED, caused by a PyTorch/CUDA threading deadlock during GPU memory cleanup. Sequential scripts cannot proceed. & Watchdog co-process polls W\&B status every 60\,s and kills the training process if still alive 5\,min after FINISHED. Exit codes 137/143 treated as success. \\
 \midrule
 Buffered stdout under nohup & Python buffers stdout when not connected to a TTY (piped or redirected by \texttt{nohup}), so log files show no output for long periods, making monitoring ineffective. & Set \texttt{PYTHONUNBUFFERED=1} before launching Python in the training script. \\
+\midrule
+Sweep OOM crash loop & After a mid-training crash, \texttt{cleanup\_vram()} could not free model tensors still referenced by \texttt{main\_with\_config()}'s local variables. 6+ consecutive trials OOM'd at \texttt{model.to(device)}. & Explicit \texttt{del model, optimizer, scheduler} in try/finally block before \texttt{gc.collect()} and \texttt{torch.cuda.empty\_cache()}. \\
+\midrule
+CUDA memory fragmentation between sweep trials & After trial 1 completed successfully, trial 2 OOM'd despite sufficient total free memory (509\,MiB) because PyTorch's CUDA allocator held non-contiguous freed blocks that couldn't satisfy a 170\,MiB allocation. & Enable \texttt{PYTORCH\_CUDA\_ALLOC\_CONF= expandable\_segments:True} to allow the allocator to coalesce fragmented blocks. \\
+\midrule
+STOP file ignored between sweep trials & \texttt{touch STOP} only works inside the epoch loop; \texttt{wandb.agent()} dispatches new trials without checking external stop signals. & Kill the sweep process directly; added \texttt{stop\_requested()} check at top of \texttt{sweep\_train()}. \\
 \bottomrule
-\end{tabular}
-\caption{Performance issues encountered during development.}
+\end{tabular}%
+}
+\caption{Performance and infrastructure issues.}
 \label{tab:issues_performance}
 \end{table}
-\end{landscape}
 
-\begin{landscape}
-\begin{table}
+\begin{table}[htbp]
 \centering
-\footnotesize
-\begin{tabular}{p{3.2cm}p{8.5cm}p{8.5cm}}
+\resizebox{\textwidth}{!}{%
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{>{\raggedright}p{2.5cm}>{\raggedright}p{6.5cm}>{\raggedright\arraybackslash}p{6.5cm}}
 \toprule
 \textbf{Issue} & \textbf{Description} & \textbf{Resolution} \\
 \midrule
-BOS token mismatch & T5 decoder received pad token (ID\,0) as start-of-sequence during inference instead of \texttt{<extra\_id\_0>} (ID\,32099) used during training. The model never learned to predict \texttt{SELECT} after pad, so every prediction started mid-query, causing 100\% SQL execution error rate. & Added \texttt{decoder\_start\_token\_id=32099} to all \texttt{model.generate()} calls so inference uses the same BOS token as training. \\
+BOS token mismatch & Decoder received pad token (ID\,0) as BOS instead of \texttt{<extra\_id\_0>} (ID\,32099) used in training. Every prediction started mid-query; 100\% SQL error rate. & Set \texttt{decoder\_start\_token\_id=32099} in all \texttt{generate()} calls. \\
 \midrule
-\texttt{no\_repeat\_ngram\_size} blocks valid SQL & \texttt{no\_repeat\_ngram\_size=3} structurally prevented generating valid multi-join SQL. 100\% of ground truth queries contain repeated 3-grams (e.g., \texttt{airport\_code AND} in multiple join conditions), so the constraint corrupted every multi-join query. & Disabled \texttt{no\_repeat\_ngram\_size} (set to 0). \\
+\texttt{no\_repeat\_ngram} blocks SQL & \texttt{no\_repeat\_ngram\_size=3} prevented valid multi-join SQL. 100\% of gold queries contain repeated 3-grams. & Set to 0 (disabled). \\
 \midrule
-LoRA checkpoint drops adapter weights & Post-training final eval deleted the in-memory model, reloaded from checkpoint, then re-applied LoRA with fresh random adapters. Checkpoints intentionally stripped \texttt{lora\_A}/\texttt{lora\_B} keys, so reloaded models had untrained adapters, collapsing F1 from $\sim$0.516 to 0.118. & Removed LoRA key stripping from \texttt{state\_dict()}; checkpoints now preserve adapter weights. Updated reload path to re-apply LoRA then load checkpoint including adapters. \\
+LoRA checkpoint drops adapters & Checkpoints stripped \texttt{lora\_A}/\texttt{lora\_B} keys. Reload re-applied LoRA with fresh random weights; F1 collapsed from 0.516 to 0.118. & Preserve adapter keys in \texttt{state\_dict()}. \\
 \midrule
-MLP head device mismatch & \texttt{T5ForFlightSQLWithMLP} creates MLP and LayerNorm layers on CPU while the base T5 model is already on GPU, causing \texttt{RuntimeError} at the first forward pass when CUDA tensors mix with CPU parameters. & Added \texttt{model.to(device)} after creating the MLP wrapper in both initial creation and checkpoint loading paths. \\
+MLP head device mismatch & MLP layers created on CPU while T5 on GPU. \texttt{RuntimeError} at first forward pass. & Add \texttt{model.to(device)} after MLP wrapper creation. \\
 \midrule
-Repetition penalty too aggressive & \texttt{repetition\_penalty=2.5} divided each token's logit by 2.5 after first use. SQL reuses tokens like \texttt{AND}, \texttt{.}, \texttt{=} extensively, so heavy penalization distorted the probability distribution away from valid SQL patterns. & Set \texttt{repetition\_penalty=1.0} (disabled). \\
+Repetition penalty too aggressive & \texttt{repetition\_penalty=2.5} distorted SQL token distribution (\texttt{AND}, \texttt{=} penalized after first use). & Set to 1.0 (disabled). \\
 \midrule
-Repetition penalty zero config & Config set \texttt{repetition\_penalty=0} instead of 1.0. Since HuggingFace applies the penalty as a divisor to token logits, this would cause division by zero at runtime. & Changed to \texttt{repetition\_penalty=1.0} (no penalty) before launching any runs. \\
+Repetition penalty zero & Config set \texttt{repetition\_penalty=0}; HuggingFace uses it as a divisor $\to$ division by zero. & Changed to 1.0. \\
 \midrule
-MLP checkpoint state\_dict mismatch & \texttt{save\_model()} saved the full MLP wrapper's \texttt{state\_dict()} (including \texttt{mlp\_norm}, \texttt{mlp.*} keys) instead of the inner T5 model's. Subsequent non-MLP trials crashed loading checkpoints with unexpected keys, wasting 4 of 8 sweep trials. & Changed \texttt{save\_model()} to always save \texttt{inner.state\_dict()} (vanilla T5 weights), consistent with the LoRA path. \\
+MLP state\_dict mismatch & \texttt{save\_model()} saved MLP wrapper keys; non-MLP trials crashed loading unexpected keys. Wasted 4/8 sweep trials. & Save \texttt{inner.state\_dict()} (vanilla T5 weights only). \\
 \midrule
-\texttt{max\_new\_tokens} truncation & \texttt{max\_new\_tokens=256} truncated 26\% of dev targets (120/466 queries exceed 256 tokens; max target length is 511). Complex multi-join queries were cut off mid-generation, producing incomplete SQL. & Increased \texttt{max\_new\_tokens} to 512 to cover the full target length range. \\
+\texttt{max\_new\_tokens} truncation & 256-token limit truncated 26\% of targets (max gold = 511). Incomplete SQL. & Increased to 512. \\
 \midrule
-SentencePiece comma spacing artifact & \texttt{batch\_decode} collapses \texttt{" , "} (space-comma-space) to \texttt{", "} (comma-space) because the SentencePiece decoder consumes the space sentinel token before commas. Since 100\% of ground truth queries use \texttt{" , "}, raw Query EM dropped to $\sim$3\% despite the model producing correct token sequences internally. & Regex post-processing after \texttt{batch\_decode}: \texttt{re.sub(r'(?<=[a-zA-Z0-9\_()])$\backslash$s*,$\backslash$s+', ' , ', sql)}. Corrected Query EM: 58.80\% (fine-tuned), 50.43\% (from scratch). \\
+SentencePiece comma artifact & \texttt{batch\_decode} collapses ``\texttt{ , }'' to ``\texttt{, }''. Raw Query EM dropped to $\sim$3\%. & Regex post-processing to restore spacing. \\
+\midrule
+\texttt{peft} not installed & All LoRA sweep trials crashed with \texttt{ModuleNotFoundError}. & \texttt{pip install peft}. \\
+\midrule
+Sweep zombie trial & LoRA trial ran 335 epochs ($\sim$10\,h) on marginal F1 gains ($\sim$0.005) resetting patience. Consumed most of 12\,h budget. & Added \texttt{patience\_tolerance} threshold. \\
+\midrule
+Transient backward crash & Bare \texttt{Exception} in \texttt{loss.backward()} at epoch 71. Transient CUDA failure. & Sweep agent retried automatically. \\
 \bottomrule
-\end{tabular}
-\caption{Model issues encountered during development.}
+\end{tabular}%
+}
+\caption{Model and sweep issues.}
 \label{tab:issues_model}
 \end{table}
-\end{landscape}
 
-\begin{table}[h!]
+\begin{table}[htbp]
 \centering
 \small
-\begin{tabular}{p{3cm}p{5cm}p{5cm}}
+\begin{tabular}{>{\raggedright}p{2.5cm}>{\raggedright}p{5.7cm}>{\raggedright\arraybackslash}p{5.7cm}}
 \toprule
 \textbf{Issue} & \textbf{Description} & \textbf{Resolution} \\
+\midrule
+\multicolumn{3}{l}{\textbf{DPO Issues}} \\
 \midrule
 OOV CUDA assert in DPO loss & \texttt{remap\_targets} returned $-1$ for tokens outside the restricted vocab (0.2\% of triplets), causing \texttt{torch.gather} out-of-bounds on GPU. & Clamp unmapped indices to 0 and mask them out of the log-probability sum. \\
 \midrule
 Auto batch probe OOM & Probe measured \texttt{memory\_allocated} (post-cleanup) instead of peak, and tested short sequences; training OOM'd on longer batches. & Use \texttt{max\_memory\_allocated} with worst-case (longest) sequences. \\
 \midrule
 Slow preference data gen & 46K SQL evaluations took $\sim$90 min due to SQLite file locking + per-query connection overhead. & In-memory SQLite copy (\texttt{sqlite3.backup}) + gold record disk cache. Reduced to $\sim$20 min. \\
+\midrule
+Final eval F1 drop & Best checkpoint reloaded for final evaluation showed F1 drops of 3--12\,pp. In-training eval used greedy decoding (\texttt{eval\_num\_beams=1}); final eval used beam search (\texttt{num\_beams=4}). LoRA trial also suffered from merge-and-save corruption. & Documented; align \texttt{eval\_num\_beams} with \texttt{num\_beams} for consistent evaluation. \\
+\midrule
+\multicolumn{3}{l}{\textbf{RL Issues}} \\
+\midrule
+IS ratio computed against reference & \texttt{compute\_old\_log\_probs()} disabled LoRA to get base model probs. The IS ratio $\pi_\text{current}/\pi_\text{old}$ was actually $\pi_\text{LoRA}/\pi_\text{base}$, which diverges as LoRA trains. clip\_frac hit 0.999 by iteration 3. & Added \texttt{use\_reference} flag: \texttt{False} keeps LoRA enabled for IS ratio (starts at 1.0), \texttt{True} disables LoRA for KL penalty only. \\
+\midrule
+Dropout noise in ratio & Both old and current log probs computed in \texttt{train()} mode. Different dropout masks on 12 layers $\times$ 300+ tokens made ratios $\gg$ 1.0 even from the same weights (clip\_frac = 0.92). & Compute both log prob passes in \texttt{eval()} mode (disables dropout, preserves gradients). Restore \texttt{train()} for optimizer step. \\
+\midrule
+Value head random init & Kaiming-initialized output layer produced $V(s) \in [-100, +100]$ vs reward range $[-1, 1]$, causing advantages and losses to spike to 25{,}000+. & Zero-initialize output layer weights and bias so initial $V(s) \approx 0$. \\
+\midrule
+\texttt{generate()} VRAM hang & \texttt{model.generate()} with batch\_size\,=\,8 $\times$ group\_size\,=\,8 allocated 23\,GB KV cache, causing a silent CUDA deadlock (0\% GPU util, all threads in \texttt{futex\_wait}). No OOM error raised. & Sub-batch generation: chunk \texttt{generate()} into groups of 16 sequences. Decoupled generation VRAM from training batch size. \\
+\midrule
+SQLite thread deadlock in reward & All 16 \texttt{ThreadPoolExecutor} threads shared one in-memory SQLite connection. Concurrent \texttt{set\_progress\_handler()} calls caused race conditions; one thread clearing the handler mid-query hung all others. & Thread-local SQLite connections: each thread creates its own in-memory copy via \texttt{sqlite3.backup()}. \\
+\midrule
+Reward $= -1.0$ for all samples & \texttt{max\_completion\_length=128} truncated 85\% of SQL (median gold length = 199 tokens), producing ``incomplete input'' errors. Combined with \texttt{temperature=1.0} corrupting token selection, all completions failed execution. & Increased \texttt{max\_completion\_length} to 512; reduced \texttt{temperature} to 0.7. \\
 \bottomrule
 \end{tabular}
-\caption{DPO-specific engineering issues (Section~\ref{sec:dpo}).}
+\caption{DPO and RL engineering issues.}
 \label{tab:dpo_issues}
 \end{table}
 
