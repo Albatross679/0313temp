@@ -1,17 +1,2 @@
-output/
-model/
-wandb/
-__pycache__/
-*.pyc
-.git/
-.env
-.env.local
-.claude/settings.local.json
-.claude/memory/
-.mypy_cache/
-.pytest_cache/
-.ipynb_checkpoints/
-*.skill
-*.tar.gz
-*.zip
-nohup.out
+# Ignore everything — generic base image copies no project files
+*

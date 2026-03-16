@@ -1,51 +1,70 @@
 ---
 name: ml-project-migration
-description: Guide for migrating ML projects between virtual machines. Covers the full workflow — what to transfer via Git (code, configs, docs), what to transfer via cloud storage like Backblaze B2 or DVC (model weights, datasets, caches), environment reproduction with Docker or venv, and handling dot-folders (.claude/, .env, .vscode/). Use when the user asks to (1) migrate, move, or transfer an ML project to a new VM or machine, (2) set up a new VM for an existing ML project, (3) decide what goes on GitHub vs cloud storage for ML artifacts, (4) create a Dockerfile or Docker image for ML project portability, (5) handle dot-folders and personal configs during migration, (6) back up or archive an ML project for later restoration.
+description: Decision-making guide for migrating ML projects to a new VM or machine. Helps categorize files (Git vs cloud storage vs manual vs skip), handle dot-folders (.claude/, .env, .vscode/), and plan what infrastructure a new project needs. Use when the user asks to (1) decide what goes on GitHub vs cloud storage for a new ML project, (2) categorize files for migration, (3) handle dot-folders and personal configs during migration, (4) plan infrastructure for a new ML project on a cloud GPU provider, (5) decide whether to use Docker, venv, or conda for a project. Does NOT handle setup execution — see vm-setup skill for that.
 ---
 
-# ML Project Migration
+# ML Project Migration — Decision Guide
 
-Migrate ML projects between VMs in 5 phases: Git push code, cloud-upload large files, clone on target, reproduce environment, verify.
+Help the user decide how to structure a new ML project for portability across VMs.
 
-## Workflow
+## File Categorization Framework
 
-### 1. Audit & Categorize
+For any ML project, categorize every file into one of four buckets:
 
-Before migrating, categorize every file:
+| Bucket | What belongs | Transfer via |
+|--------|-------------|-------------|
+| **Git** | Code, configs, `pyproject.toml`, Dockerfile, `.github/`, docs, small data (<50 MB), `CLAUDE.md`, `.claude/skills/`, scripts | GitHub |
+| **Cloud storage** | Model weights (`.pt`, `.bin`, `.safetensors`), checkpoints, large datasets (>50 MB), optionally HF cache | B2 / S3 / GCS |
+| **Manual** | `.env` (secrets), `.claude/memory/` (personal), `.claude/settings.local.json` (machine-specific) | SCP / rsync |
+| **Skip** | `__pycache__/`, `.mypy_cache/`, `.pytest_cache/`, `.wandb/`, `.ipynb_checkpoints/`, `nohup.out` | Never (regenerated) |
 
-- **Git**: code, configs, requirements, docs, small data (<50 MB), Dockerfile, shared `.claude/skills/`, `CLAUDE.md`
-- **Cloud storage**: model weights, checkpoints, large datasets, HF cache (if slow internet)
-- **Manual**: `.env` secrets, personal `.claude/memory/`, `.claude/settings.local.json`
-- **Skip**: `__pycache__/`, `.mypy_cache/`, `.wandb/`, `.ipynb_checkpoints/` (all regenerated)
+## Dot-Folder Decision Matrix
 
-### 2. Transfer Code via Git
+| Dot-folder/file | Commit to Git? | Transfer manually? | Notes |
+|----------------|---------------|-------------------|-------|
+| `.gitignore` | Yes | N/A | Essential |
+| `.dockerignore` | Yes | N/A | Essential |
+| `.github/` | Yes | N/A | CI/CD |
+| `CLAUDE.md` | Yes | N/A | Project instructions |
+| `.claude/skills/` (shared) | Yes | N/A | Shared knowledge |
+| `.claude/settings.local.json` | No | Optional | Machine-specific paths |
+| `.claude/memory/` | No | Optional | Personal context |
+| `.env` | No | SCP | Secrets, never Git |
+| `.vscode/settings.json` | No | Use Settings Sync | Auto-syncs via VS Code |
+| `.cache/`, `.huggingface/` | No | Via cloud storage | Or re-download |
+| `.wandb/` | No | No | Regenerated |
+| `.mypy_cache/`, `.pytest_cache/` | No | No | Regenerated |
 
-Push all code and configs. Ensure `.gitignore` excludes model weights, large data, caches, secrets, and personal dot-configs.
+## HuggingFace Cache Decision
 
-### 3. Transfer Large Files via Cloud Storage
+| Scenario | Recommendation |
+|----------|---------------|
+| Fast internet on target VM | Re-download (simpler) |
+| Slow/metered internet | Transfer via cloud storage |
+| Custom/fine-tuned models | Always transfer (not re-downloadable) |
+| Base models only | Re-download |
 
-Use **rclone + Backblaze B2** (simplest) or **DVC** (version-controlled). Transfer: `model/`, `output/`, large `data/` files, optionally HF cache.
+## Environment Reproduction Decision
 
-For direct VM-to-VM access, `rsync` also works.
+| Approach | When to use |
+|----------|------------|
+| **Generic Docker image + mount code** | Reusable across projects, fast iteration, cloud GPU providers (Vast.ai, RunPod) |
+| **Project-specific Docker image** | Need exact reproducibility, complex build, shared with team |
+| **venv + pyproject.toml** | Small projects, no Docker needed, local development |
+| **conda** | Need non-Python deps (C libraries, specific CUDA) |
 
-### 4. Reproduce Environment
+## Non-root User on Cloud GPU Providers
 
-**Dockerfile** (recommended) — commit to Git, rebuild on target. Use `nvidia/cuda` base for GPU projects.
-
-**Docker image** — push pre-built image to registry when builds are slow or exact binary match is needed.
-
-**venv + requirements.txt** — simplest for small projects.
-
-### 5. Verify
-
-Clone, install deps, download large files, copy secrets, run smoke test.
+- Vast.ai, RunPod, Lambda all boot containers as **root**
+- Do NOT add `USER` directive to Dockerfile — breaks boot sequence
+- Built-in `user` account (UID 1001) exists with passwordless sudo
+- Switch at runtime: `su - user`
+- VS Code Remote SSH: connect as `user` directly for non-root sessions
 
 ## Detailed Reference
 
 Read [references/migration-checklist.md](references/migration-checklist.md) for:
-- Exact commands for each phase (rclone, DVC, rsync, Docker)
-- Complete `.gitignore` template for ML projects
-- Dot-folder decision matrix (what to commit, transfer, or skip)
-- `.claude/` specific guidance
-- HF cache transfer decision table
+- `.gitignore` template for ML projects
+- Complete file categorization table with examples
+- B2 upload/download command patterns
 - Post-migration verification checklist
